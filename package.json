@@ -1,0 +1,14 @@
+{
+  "name": "scrabble",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test:engine": "node --test tests/engine.test.mjs",
+    "sync:engine": "powershell -File scripts/sync-engine.ps1",
+    "import:dictionary": "node scripts/import-dictionary.mjs",
+    "serve": "npx --yes serve ."
+  },
+  "dependencies": {
+    "pg": "^8.13.1"
+  }
+}

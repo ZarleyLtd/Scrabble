@@ -1,0 +1,7 @@
+project_id = "apps"
+
+[api]
+enabled = true
+
+[functions.scrabble-api]
+verify_jwt = false

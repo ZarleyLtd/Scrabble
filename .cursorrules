@@ -1,0 +1,27 @@
+# Project: Multiplayer Scrabble
+
+## JavaScript Module Architecture
+- **Configuration**: `/assets/js/config/` (e.g. `app-config.js`).
+- **Utilities**: `/assets/js/utils/` (e.g. `api.js`, `brief-message.js`, `player-storage.js`).
+- **Components**: `/assets/js/components/` (board, rack, lobby UI).
+- **Pages**: `/assets/js/pages/` (index, game).
+- **Game engine (browser copy)**: `/assets/js/game/engine/` — synced from `/shared/engine/`.
+- **Shared engine (canonical)**: `/shared/engine/` — edit HERE only, then run `scripts/sync-engine.ps1`.
+- **Entry Point**: `/assets/js/main.js` or page-specific bootstrap.
+- **No Duplication**: Common code must be extracted to utilities or components.
+
+## Brief message (shared CursorSites pattern)
+- **Canonical spec**: `../cursor-sites-shared/ui/BRIEF_MESSAGE.md` — sync via `../cursor-sites-shared/scripts/sync-ui.ps1`
+- **Implementation**: `BriefMessage.show(text, anchorEl, options)` in `/assets/js/utils/brief-message.js`
+- **Styles**: `/assets/css/brief-message.css` (imported from `style.css`)
+
+## Rules for AI (Cursor)
+1. **Script Loading Order**: config → utils → components → pages → main/bootstrap. Engine modules may use ES `import` where needed.
+2. **Relative Paths**: Always use relative paths (e.g. `assets/css/style.css`).
+3. **No absolute URLs** in source: never include `http://localhost` or drive letters like `C:/Users/`.
+4. **Engine sync**: Never edit `assets/js/game/engine/` or `supabase/functions/_shared/engine/` by hand — edit `shared/engine/` and run `scripts/sync-engine.ps1`.
+5. **Secrecy**: Never return other players' racks or the bag order to the client. State responses are player-scoped via token.
+6. **Server authority**: Browser engine is for preview only; all commits go through the Edge Function which re-validates.
+
+## CORS and fetch
+7. Prefer simple requests: GET with no custom headers, or POST with `Content-Type: text/plain;charset=UTF-8` and a JSON string body (matches theConfessional), to avoid unnecessary preflight issues where possible.

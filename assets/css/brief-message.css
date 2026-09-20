@@ -1,0 +1,52 @@
+/**
+ * Brief message styles — CursorSites shared pattern.
+ */
+.brief-message {
+  --brief-msg-z-index: 600;
+  --brief-msg-bg: rgba(30, 41, 59, 0.95);
+  --brief-msg-color: #e2e8f0;
+  --brief-msg-border: 1px solid #475569;
+  --brief-msg-radius: 0.5rem;
+  --brief-msg-padding: 0.5rem 1rem;
+  --brief-msg-font-size: 0.95rem;
+  --brief-msg-font-weight: 500;
+  --brief-msg-max-width: min(90vw, 420px);
+  --brief-msg-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+
+  position: fixed;
+  z-index: var(--brief-msg-z-index);
+  transform: translate(-50%, -50%);
+  padding: var(--brief-msg-padding);
+  max-width: var(--brief-msg-max-width);
+  background: var(--brief-msg-bg);
+  color: var(--brief-msg-color);
+  border: var(--brief-msg-border);
+  border-radius: var(--brief-msg-radius);
+  box-shadow: var(--brief-msg-shadow);
+  pointer-events: none;
+}
+
+.brief-message--above {
+  transform: translate(-50%, -100%);
+}
+
+.brief-message--below {
+  transform: translate(-50%, 0);
+}
+
+.brief-message__text {
+  display: block;
+  font-size: var(--brief-msg-font-size);
+  font-weight: var(--brief-msg-font-weight);
+  color: inherit;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.brief-message--multiline .brief-message__text {
+  white-space: pre-line;
+  line-height: 1.35;
+  overflow: visible;
+  text-overflow: unset;
+}

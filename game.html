@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Scrabble Game</title>
+  <link rel="stylesheet" href="assets/css/style.css" />
+</head>
+<body>
+  <header class="app-header">
+    <h1><a href="index.html">Scrabble</a></h1>
+    <span class="muted" id="headerMeta"></span>
+  </header>
+
+  <div id="joinPanel" class="panel hidden"></div>
+  <div id="lobbyPanel" class="panel hidden"></div>
+  <div id="gameRoot"></div>
+  <p class="error-banner hidden" id="pageError"></p>
+
+  <script src="assets/js/config/app-config.js"></script>
+  <script src="assets/js/utils/brief-message.js"></script>
+  <script src="assets/js/utils/api.js"></script>
+  <script src="assets/js/utils/player-storage.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.49.1/dist/umd/supabase.min.js"></script>
+  <script src="assets/js/utils/realtime.js"></script>
+  <script type="module" src="assets/js/pages/game-bootstrap.js"></script>
+</body>
+</html>

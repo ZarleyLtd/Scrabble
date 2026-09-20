@@ -1,0 +1,17 @@
+node_modules/
+.DS_Store
+Thumbs.db
+.env
+.env.local
+*.log
+
+# Collins/SOWPODS word list — copyrighted; supply locally, do not commit
+data/sowpods.txt
+data/*.txt
+
+# Synced engine copies are regenerated; keep shared/ as source of truth
+# (committed copies under assets/ and supabase/functions/_shared are OK for deploy)
+
+# Supabase local temp
+supabase/.temp/
+supabase/.branches/
