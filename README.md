@@ -8,6 +8,8 @@ Shared-link multiplayer Scrabble. Static vanilla JS frontend + Supabase Edge Fun
 npx serve .
 ```
 
+`serve.json` keeps `game.html?…` query strings (the default `serve` clean-URL rewrite would drop them). You can also use `python -m http.server 5174`.
+
 Open `index.html`, start a local game, or open `game.html?local=1`.
 
 ## Stack
