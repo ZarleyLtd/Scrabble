@@ -44,12 +44,24 @@ export function attachTileInteraction(opts) {
     if (prev) prev.classList.remove('cell--drop-target');
   }
 
+  /** Board aim point: centre of the floating ghost (above the finger), not the touch point. */
+  function boardAimPoint(clientX, clientY) {
+    if (ghost) {
+      var r = ghost.getBoundingClientRect();
+      if (r.width > 0 && r.height > 0) {
+        return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+      }
+    }
+    return { x: clientX, y: clientY };
+  }
+
   function updateDropHighlight(clientX, clientY) {
     clearDropHighlight();
     if (!session || !session.dragging) return;
     var c = ctx();
     if (!canPlayBoard(c)) return;
-    var cell = cellUnder(clientX, clientY);
+    var aim = boardAimPoint(clientX, clientY);
+    var cell = cellUnder(aim.x, aim.y);
     if (!cell) return;
     var moving =
       session.kind === 'board' ? { row: session.row, col: session.col } : null;
@@ -319,21 +331,34 @@ export function attachTileInteraction(opts) {
     e.preventDefault();
   }
 
+  function notifyNotYourTurn(c, anchorEl) {
+    if (typeof c.onNotYourTurn === 'function') {
+      c.onNotYourTurn(anchorEl || boardEl);
+    }
+  }
+
   function finishDrag(e) {
     if (!session) return;
     var c = ctx();
     var wasDragging = session.dragging;
     var snap = session;
+    var x = e.clientX;
+    var y = e.clientY;
+    // Aim at the ghost tile centre before endSession removes it
+    var boardAim = wasDragging ? boardAimPoint(x, y) : { x: x, y: y };
     endSession();
 
     if (!wasDragging) {
-      if (!canPlayBoard(c)) return;
       var now = Date.now();
       // Double-tap rack tile → auto-place
       if (snap.kind === 'rack' && typeof c.onAutoPlace === 'function') {
         if (snap.index === lastRackTap.index && now - lastRackTap.time <= DBL_TAP_MS) {
           lastRackTap = { index: -1, time: 0 };
           lastBoardTap = { row: -1, col: -1, time: 0 };
+          if (!canPlayBoard(c)) {
+            notifyNotYourTurn(c, rackEl);
+            return;
+          }
           c.onAutoPlace(snap.index);
           return;
         }
@@ -341,6 +366,7 @@ export function attachTileInteraction(opts) {
         lastBoardTap = { row: -1, col: -1, time: 0 };
         return;
       }
+      if (!canPlayBoard(c)) return;
       // Double-tap tentative board tile → return to rack
       if (snap.kind === 'board' && typeof c.onReturnToRack === 'function') {
         if (
@@ -366,9 +392,6 @@ export function attachTileInteraction(opts) {
 
     if (c.exchangeMode) return;
 
-    var x = e.clientX;
-    var y = e.clientY;
-
     if (snap.kind === 'rack') {
       if (overRack(x, y)) {
         if (!canReorderRack(c)) return;
@@ -386,8 +409,11 @@ export function attachTileInteraction(opts) {
         return;
       }
 
-      if (!canPlayBoard(c)) return;
-      var cell = cellUnder(x, y);
+      var cell = cellUnder(boardAim.x, boardAim.y);
+      if (!canPlayBoard(c)) {
+        if (cell) notifyNotYourTurn(c, cell.el || boardEl);
+        return;
+      }
       if (cell && canDropOnBoard(c, cell.row, cell.col, null)) {
         if (typeof c.onPlaceFromRack === 'function') {
           var placed = c.onPlaceFromRack(cell.row, cell.col, snap.index);
@@ -411,7 +437,7 @@ export function attachTileInteraction(opts) {
         return;
       }
 
-      var dest = cellUnder(x, y);
+      var dest = cellUnder(boardAim.x, boardAim.y);
       if (
         dest &&
         (dest.row !== snap.row || dest.col !== snap.col) &&

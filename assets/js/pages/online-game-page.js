@@ -192,6 +192,29 @@ export function startOnlineGamePage(ctx) {
     );
   }
 
+  /**
+   * Opening deal: empty rack, no turns yet, every earlier seat has already drawn.
+   */
+  function canDrawOpeningTiles() {
+    if (!snapshot || snapshot.status !== 'active') return false;
+    var me = myPlayer();
+    if (!me || me.resigned) return false;
+    if ((me.rack && me.rack.length) || (me.rackCount != null && me.rackCount > 0)) {
+      return false;
+    }
+    var moves = snapshot.moves || [];
+    var started = moves.some(function (m) {
+      return m.type === 'play' || m.type === 'pass' || m.type === 'exchange';
+    });
+    if (started) return false;
+    return (snapshot.players || []).every(function (p) {
+      if (Number(p.seat) >= Number(me.seat)) return true;
+      if (p.resigned) return true;
+      var n = p.rackCount != null ? p.rackCount : p.rack ? p.rack.length : 0;
+      return n > 0;
+    });
+  }
+
   function rackLetters() {
     var me = myPlayer();
     return (me && me.rack) || [];
@@ -347,6 +370,9 @@ export function startOnlineGamePage(ctx) {
             renderGame();
           },
           onAutoPlace: autoPlaceFromRack,
+          onNotYourTurn: function (el) {
+            brief("It's not your turn", el || $('board'));
+          },
           onReorderRack: function (from, to) {
             if (!me || from === to) return { ok: true };
             if (from < 0 || from >= me.rack.length || to < 0 || to >= me.rack.length) {
@@ -520,7 +546,12 @@ export function startOnlineGamePage(ctx) {
       rackCount: (me ? me.rack.length : 0) + placements.length,
       interactive: myTurn,
       onCellClick: function (row, col, isTent) {
-        if (!myTurn) return;
+        if (!myTurn) {
+          if (selectedRackIndex != null) {
+            brief("It's not your turn", $('board'));
+          }
+          return;
+        }
         if (isTent) return;
         if (selectedBoard) {
           var idx = placements.findIndex(function (p) {
@@ -687,6 +718,8 @@ export function startOnlineGamePage(ctx) {
     var btns = $('actionButtons');
     var turnInProgress = placements.length > 0;
     var canAct = myTurn && me && !me.resigned;
+    var canGetLetters =
+      (canAct || canDrawOpeningTiles()) && !turnInProgress && !exchangeMode && me && !me.resigned;
 
     var primary;
     if (exchangeMode) {
@@ -761,7 +794,7 @@ export function startOnlineGamePage(ctx) {
     var menuActions = [];
     menuActions.push({
       label: 'Get Letter Tiles',
-      disabled: !canAct || turnInProgress || exchangeMode,
+      disabled: !canGetLetters,
       onClick: function (e) {
         mutate(function () {
           return ScrabbleAPI.drawTiles({

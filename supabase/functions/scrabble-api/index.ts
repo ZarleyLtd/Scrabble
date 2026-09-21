@@ -416,6 +416,29 @@ function checkTurn(game: Record<string, unknown>, viewer: Record<string, unknown
   return null;
 }
 
+/** Opening deal: empty rack, no turns yet, every earlier seat has already drawn. */
+function canDrawOpeningTiles(
+  game: Record<string, unknown>,
+  players: Array<Record<string, unknown>>,
+  viewer: Record<string, unknown>,
+  moves: Array<Record<string, unknown>>,
+) {
+  if (game.status !== "active") return false;
+  if (viewer.resigned) return false;
+  if (String(viewer.rack || "").length > 0) return false;
+  const started = moves.some((m) => {
+    const t = String(m.type || "");
+    return t === "play" || t === "pass" || t === "exchange";
+  });
+  if (started) return false;
+  const mySeat = Number(viewer.seat);
+  return players.every((p) => {
+    if (Number(p.seat) >= mySeat) return true;
+    if (p.resigned) return true;
+    return String(p.rack || "").length > 0;
+  });
+}
+
 function checkVersion(game: Record<string, unknown>, body: Record<string, unknown>) {
   if (body.expectedVersion != null && Number(body.expectedVersion) !== Number(game.version)) {
     return true;
@@ -534,8 +557,14 @@ async function doDrawTiles(body: Record<string, unknown>) {
   const code = String(body.code || "");
   const token = String(body.token || "");
   return mutate(code, token, body, async (client, game, players, viewer) => {
+    const moves = (
+      await client.queryObject<Record<string, unknown>>`
+        SELECT * FROM scrabble.moves WHERE game_id = ${game.id}::uuid ORDER BY created_at`
+    ).rows;
     const turnErr = checkTurn(game, viewer);
-    if (turnErr) return fail(turnErr);
+    if (turnErr && !canDrawOpeningTiles(game, players, viewer, moves)) {
+      return fail(turnErr);
+    }
     // Drawing does not close the challenge window — only completing a turn does
     const rack = rackFromString(String(viewer.rack || ""));
     const bag = bagFromString(String(game.bag || ""));
@@ -552,10 +581,6 @@ async function doDrawTiles(body: Record<string, unknown>) {
       WHERE id = ${game.id}::uuid`;
     await persistPulse(client, String(game.id), version, Number(game.current_seat), String(game.status));
     game.version = version;
-    const moves = (
-      await client.queryObject<Record<string, unknown>>`
-        SELECT * FROM scrabble.moves WHERE game_id = ${game.id}::uuid ORDER BY created_at`
-    ).rows;
     return ok(scopedState(game, players, moves, viewer));
   });
 }
