@@ -503,11 +503,19 @@ export function createLocalGame(options) {
           against: move.seat
         });
         bump();
-        return { ok: true, outcome: 'failed' };
+        return {
+          ok: true,
+          outcome: 'failed',
+          challengerName: challenger.name,
+          challengedName: move.name
+        };
       }
 
       var mover = state.players.find(function (p) {
         return p.seat === move.seat;
+      });
+      var removedPlacements = (move.placements || []).map(function (pl) {
+        return { row: pl.row, col: pl.col, letter: pl.letter, blank: !!pl.blank };
       });
       move.placements.forEach(function (pl) {
         state.board[pl.row][pl.col] = null;
@@ -520,6 +528,13 @@ export function createLocalGame(options) {
       mover.rack = (move.rackBefore || '').split('').filter(Boolean);
       move.challengeOutcome = 'success';
       move.challengedByName = challenger.name;
+      move.words = (move.words || []).map(function (w) {
+        return {
+          word: w.word,
+          score: w.score,
+          valid: false
+        };
+      });
       state.moves.push({
         type: 'challenge',
         outcome: 'success',
@@ -530,7 +545,13 @@ export function createLocalGame(options) {
       state.challengeableMoveIndex = null;
       // Challenged player loses the turn; current seat stays on the next player
       bump();
-      return { ok: true, outcome: 'success' };
+      return {
+        ok: true,
+        outcome: 'success',
+        placements: removedPlacements,
+        challengerName: challenger.name,
+        challengedName: move.name || (mover && mover.name) || ''
+      };
     }
   };
 }

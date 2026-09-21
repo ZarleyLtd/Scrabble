@@ -11,6 +11,11 @@ import { findAutoPlaceSquare, isSquareSelectable } from '../game/engine/placemen
 import { playBoardPlaceSound } from '../utils/tile-sounds.js';
 import { formatEndReason, resolveEndReason } from '../utils/end-reason.js';
 import { formatMoveLogEntry, formatScoreboardHtml } from '../utils/format-move-log.js';
+import {
+  flashHeaderStatus,
+  animateChallengeRemoval,
+  detectNewChallengeOutcome
+} from '../utils/challenge-fx.js';
 
 function $(id) {
   return document.getElementById(id);
@@ -51,6 +56,17 @@ export function startOnlineGamePage(ctx) {
   var busy = false;
   var tileUX = null;
   var actionsExpanded = false;
+  var challengeFxBusy = false;
+  var lastChallengeFxKey = null;
+
+  function challengeLabel(challengerName, challengedName) {
+    return (
+      (challengerName || 'Player') +
+      ' is challenging ' +
+      (challengedName || 'Player') +
+      "'s turn"
+    );
+  }
 
   function setError(msg) {
     if (!ctx.errorEl) return;
@@ -63,16 +79,75 @@ export function startOnlineGamePage(ctx) {
     ctx.errorEl.classList.remove('hidden');
   }
 
+  function applySnapshotData(data, prevRack) {
+    snapshot = data;
+    preserveRackOrder(prevRack);
+    if (data.gameId && window.ScrabbleRealtime) {
+      ensureRealtime(data.gameId);
+    }
+    renderAll();
+    return data;
+  }
+
   function refresh() {
     if (!creds || !creds.token) return Promise.resolve();
+    if (challengeFxBusy) return Promise.resolve();
+    var prev = snapshot;
+    var prevRack = null;
+    var meBefore = myPlayer();
+    if (meBefore && meBefore.rack) prevRack = meBefore.rack.slice();
     return ScrabbleAPI.state(code, creds.token).then(function (data) {
-      snapshot = data;
-      if (data.gameId && window.ScrabbleRealtime) {
-        ensureRealtime(data.gameId);
+      var fx = detectNewChallengeOutcome(prev, data);
+      if (fx && fx.key !== lastChallengeFxKey) {
+        lastChallengeFxKey = fx.key;
+        challengeFxBusy = true;
+        if (fx.outcome === 'success') {
+          return flashHeaderStatus('Challenge Succeeded')
+            .then(function () {
+              return animateChallengeRemoval($('board'), fx.placements);
+            })
+            .then(function () {
+              challengeFxBusy = false;
+              return applySnapshotData(data, prevRack);
+            })
+            .catch(function (err) {
+              challengeFxBusy = false;
+              throw err;
+            });
+        }
+        return applySnapshotData(data, prevRack)
+          .then(function () {
+            return flashHeaderStatus('Challenge Failed');
+          })
+          .then(function () {
+            challengeFxBusy = false;
+            renderAll();
+            return data;
+          })
+          .catch(function (err) {
+            challengeFxBusy = false;
+            throw err;
+          });
       }
-      renderAll();
-      return data;
+      return applySnapshotData(data, prevRack);
     });
+  }
+
+  /** Keep local rack order across state refreshes when the letter multiset still matches. */
+  function preserveRackOrder(preferred) {
+    if (!preferred || !preferred.length) return;
+    var me = myPlayer();
+    if (!me || !me.rack) return;
+    var avail = me.rack.slice();
+    var ordered = [];
+    for (var i = 0; i < preferred.length; i++) {
+      var idx = avail.indexOf(preferred[i]);
+      if (idx >= 0) {
+        ordered.push(preferred[i]);
+        avail.splice(idx, 1);
+      }
+    }
+    me.rack = ordered.concat(avail);
   }
 
   var realtimeReady = false;
@@ -246,6 +321,8 @@ export function startOnlineGamePage(ctx) {
         var myTurn = isMyTurn();
         return {
           interactive: myTurn,
+          allowRackReorder:
+            !!me && !me.resigned && snapshot && snapshot.status === 'active',
           exchangeMode: exchangeMode,
           board: snapshot && snapshot.board,
           placements: placements,
@@ -514,11 +591,13 @@ export function startOnlineGamePage(ctx) {
 
     renderRack($('rack'), {
       rack: me ? me.rack : [],
-      selectedIndex: exchangeMode ? null : selectedRackIndex,
-      disabled: !myTurn || (me && me.resigned),
+      // Selection highlight only in exchange mode (applied below)
+      selectedIndex: null,
+      disabled: !!(me && me.resigned) || snapshot.status !== 'active',
       onTileClick: function (idx) {
-        if (!myTurn) return;
+        if (me && me.resigned) return;
         if (exchangeMode) {
+          if (!myTurn) return;
           if (exchangeSelected[idx]) delete exchangeSelected[idx];
           else exchangeSelected[idx] = true;
           renderGame();
@@ -527,9 +606,6 @@ export function startOnlineGamePage(ctx) {
         selectedRackIndex = idx;
         selectedBoard = null;
         renderGame();
-      },
-      onTileDblClick: function (idx) {
-        autoPlaceFromRack(idx);
       }
     });
     if (exchangeMode) {
@@ -543,6 +619,20 @@ export function startOnlineGamePage(ctx) {
 
     var preview = placements.length ? scoreTurn(board, placements) : null;
     var previewEl = $('turnPreview');
+    var statusEl = $('headerStatus');
+    var cur = (snapshot.players || []).find(function (p) {
+      return p.seat === snapshot.currentSeat;
+    });
+    if (statusEl) {
+      if (!challengeFxBusy) {
+        statusEl.textContent =
+          snapshot.status === 'finished'
+            ? 'Game over'
+            : cur
+              ? cur.name + "'s turn"
+              : '';
+      }
+    }
     if (preview && !preview.ok) {
       previewEl.innerHTML = '<span style="color:var(--danger)">' + preview.error + '</span>';
     } else if (preview && preview.ok) {
@@ -555,15 +645,10 @@ export function startOnlineGamePage(ctx) {
             return w.word + ' (' + w.score + ')';
           })
           .join(', ');
+    } else if (exchangeMode) {
+      previewEl.textContent = 'Exchange mode: select tiles, then confirm exchange';
     } else {
-      var cur = (snapshot.players || []).find(function (p) {
-        return p.seat === snapshot.currentSeat;
-      });
-      previewEl.textContent = myTurn
-        ? 'Your turn'
-        : cur
-          ? 'Waiting for ' + cur.name
-          : '';
+      previewEl.textContent = '';
     }
 
     $('scores').innerHTML = (snapshot.players || [])
@@ -658,6 +743,7 @@ export function startOnlineGamePage(ctx) {
         className: 'primary',
         disabled: !canAct,
         onClick: function (e) {
+          if (!confirm('Pass your turn?')) return;
           mutate(function () {
             return ScrabbleAPI.pass({
               code: code,
@@ -754,21 +840,70 @@ export function startOnlineGamePage(ctx) {
       menuActions.push({
         label: 'Challenge',
         className: 'danger',
-        disabled: !(me.challengesLeft > 0) || !!isOwnPlay,
+        disabled: !(me.challengesLeft > 0) || !!isOwnPlay || challengeFxBusy || busy,
         onClick: function (e) {
-          mutate(function () {
-            return ScrabbleAPI.challenge({
-              code: code,
-              token: creds.token,
-              expectedVersion: snapshot.version
-            }).then(function (data) {
-              brief(
-                data && data.outcome === 'success' ? 'Challenge won' : 'Challenge failed',
-                e.target
-              );
-            });
+          if (busy || challengeFxBusy || !challengedPlay) return;
+          var play = challengedPlay;
+          var challengePlacements = (play.placements || []).map(function (pl) {
+            return { row: pl.row, col: pl.col };
           });
+          var challengedName = play.name || 'Player';
+          var challengerName = me.name || 'Player';
+          var prevRack = me.rack ? me.rack.slice() : null;
+          var expectedVersion = snapshot.version;
+
+          busy = true;
+          challengeFxBusy = true;
           actionsExpanded = false;
+          renderGame();
+
+          flashHeaderStatus(challengeLabel(challengerName, challengedName))
+            .then(function () {
+              return ScrabbleAPI.challenge({
+                code: code,
+                token: creds.token,
+                expectedVersion: expectedVersion
+              });
+            })
+            .then(function (data) {
+              var outcome = data && data.outcome;
+              var fxKey = String(play.id) + ':' + (outcome || '');
+              lastChallengeFxKey = fxKey;
+
+              if (outcome === 'success') {
+                return flashHeaderStatus('Challenge Succeeded')
+                  .then(function () {
+                    return animateChallengeRemoval($('board'), challengePlacements);
+                  })
+                  .then(function () {
+                    challengeFxBusy = false;
+                    applySnapshotData(data, prevRack);
+                  });
+              }
+
+              return flashHeaderStatus('Challenge Failed').then(function () {
+                challengeFxBusy = false;
+                applySnapshotData(data, prevRack);
+              });
+            })
+            .catch(function (err) {
+              challengeFxBusy = false;
+              if (err.code === 409) {
+                brief('Board updated — refreshing', ctx.gameRoot);
+                return refresh();
+              }
+              setError(err.message || String(err));
+              renderAll();
+            })
+            .finally(function () {
+              busy = false;
+              challengeFxBusy = false;
+              placements = [];
+              selectedRackIndex = null;
+              selectedBoard = null;
+              exchangeMode = false;
+              exchangeSelected = {};
+            });
         }
       });
     }

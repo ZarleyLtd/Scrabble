@@ -8,7 +8,21 @@ export function formatMoveLogEntry(m) {
   }
 
   var name = m.name || (m.seat != null ? 'P' + m.seat : '');
-  var nameHtml = name ? '<strong>' + name + '</strong> ' : '';
+  var nameHtml = '<span class="move-log__name">' + (name || '') + '</span>';
+
+  function row(detailHtml, scoreHtml) {
+    return (
+      '<div class="move-log__row">' +
+      nameHtml +
+      '<span class="move-log__detail">' +
+      (detailHtml || '') +
+      '</span>' +
+      '<span class="move-log__score">' +
+      (scoreHtml || '') +
+      '</span>' +
+      '</div>'
+    );
+  }
 
   if (m.type === 'play') {
     var outcome = m.challengeOutcome || m.challenge_outcome;
@@ -16,54 +30,65 @@ export function formatMoveLogEntry(m) {
       m.challengedByName ||
       m.challenged_by_name ||
       (m.challengedBy != null ? String(m.challengedBy) : '');
-    var words = (m.words || [])
+    var wordList = m.words || [];
+    var hasValidity = wordList.some(function (w) {
+      return w && (w.valid === true || w.valid === false || w.invalid === true);
+    });
+    var words = wordList
       .map(function (w) {
         var word = w.word;
-        if (outcome === 'success') {
+        var failed =
+          w.valid === false ||
+          w.invalid === true ||
+          (outcome === 'success' && !hasValidity);
+        if (failed) {
           return '<span class="move-log__struck">' + word + '</span>';
         }
         return word;
       })
       .join(', ');
-    var scoreBit =
+    var scoreHtml =
       m.score != null
         ? outcome === 'success'
-          ? ' <span class="move-log__struck">+' + m.score + '</span>'
-          : ' +' + m.score
+          ? '<span class="move-log__struck">+' + m.score + '</span>'
+          : '+' + m.score
         : '';
-    var challengeBit = challenger
-      ? ' <span class="move-log__challenge">{challenged by ' + challenger + '}</span>'
-      : '';
-    return '<div>' + nameHtml + words + scoreBit + challengeBit + '</div>';
+    var detail = words;
+    if (challenger) {
+      detail +=
+        ' <span class="move-log__challenge">challenged by ' + challenger + '</span>';
+    }
+    return row(detail, scoreHtml);
   }
 
   if (m.type === 'pass') {
-    return '<div>' + nameHtml + '{pass}</div>';
+    return row('{pass}', '');
   }
 
   if (m.type === 'exchange') {
     var count = m.count != null ? m.count : m.meta && m.meta.count;
     var label = count != null ? '{exchange ' + count + '}' : '{exchange}';
-    return '<div>' + nameHtml + label + '</div>';
+    return row(label, '');
   }
 
   if (m.type === 'resign') {
-    return '<div>' + nameHtml + '{resign}</div>';
+    return row('{resign}', '');
   }
 
   if (m.type === 'endgame_adjust') {
-    return '<div>{endgame}</div>';
+    return (
+      '<div class="move-log__row">' +
+      '<span class="move-log__name"></span>' +
+      '<span class="move-log__detail">{endgame}</span>' +
+      '<span class="move-log__score"></span>' +
+      '</div>'
+    );
   }
 
   var outcome2 = m.challenge_outcome || m.outcome;
-  return (
-    '<div>' +
-    nameHtml +
-    '{' +
-    m.type +
-    '}' +
-    (outcome2 ? ' (' + outcome2 + ')' : '') +
-    '</div>'
+  return row(
+    '{' + m.type + '}' + (outcome2 ? ' (' + outcome2 + ')' : ''),
+    ''
   );
 }
 

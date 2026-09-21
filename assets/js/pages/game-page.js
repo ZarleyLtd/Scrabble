@@ -11,6 +11,10 @@ import { findAutoPlaceSquare } from '../game/engine/placement.mjs';
 import { playBoardPlaceSound } from '../utils/tile-sounds.js';
 import { formatEndReason, resolveEndReason } from '../utils/end-reason.js';
 import { formatMoveLogEntry, formatScoreboardHtml } from '../utils/format-move-log.js';
+import {
+  flashHeaderStatus,
+  animateChallengeRemoval
+} from '../utils/challenge-fx.js';
 
 function $(id) {
   return document.getElementById(id);
@@ -77,6 +81,74 @@ export function startLocalGamePage(root) {
 
   var tileUX = null;
   var actionsExpanded = false;
+  var challengeFxBusy = false;
+
+  function challengeLabel(challengerName, challengedName) {
+    return (
+      (challengerName || 'Player') +
+      ' is challenging ' +
+      (challengedName || 'Player') +
+      "'s turn"
+    );
+  }
+
+  function runLocalChallenge(assumeInvalid, anchorEl) {
+    if (challengeFxBusy) return;
+    var s = game.getState();
+    if (s.challengeableMoveIndex == null) return;
+    var move = s.moves[s.challengeableMoveIndex];
+    if (!move || move.type !== 'play') return;
+
+    var placements = (move.placements || []).map(function (pl) {
+      return { row: pl.row, col: pl.col };
+    });
+    var challengedName = move.name || 'Player';
+    var challengerName = '';
+    var current = s.players.find(function (p) {
+      return p.seat === s.currentSeat;
+    });
+    if (
+      current &&
+      !current.resigned &&
+      current.seat !== move.seat &&
+      current.challengesLeft > 0
+    ) {
+      challengerName = current.name;
+    } else {
+      var other = s.players.find(function (p) {
+        return !p.resigned && p.seat !== move.seat && p.challengesLeft > 0;
+      });
+      challengerName = other ? other.name : 'Player';
+    }
+
+    challengeFxBusy = true;
+    actionsExpanded = false;
+    render();
+
+    flashHeaderStatus(challengeLabel(challengerName, challengedName))
+      .then(function () {
+        if (assumeInvalid) {
+          return flashHeaderStatus('Challenge Succeeded')
+            .then(function () {
+              return animateChallengeRemoval($('board'), placements);
+            })
+            .then(function () {
+              var r = game.challengeLocal(true);
+              if (r.error) brief(r.error, anchorEl);
+            });
+        }
+        var r = game.challengeLocal(false);
+        if (r.error) {
+          brief(r.error, anchorEl);
+          return;
+        }
+        return flashHeaderStatus('Challenge Failed');
+      })
+      .finally(function () {
+        challengeFxBusy = false;
+        render();
+      });
+  }
 
   function autoPlaceFromRack(idx) {
     var s = game.getState();
@@ -238,10 +310,10 @@ export function startLocalGamePage(root) {
       }
     });
 
-    var selectedForRack = s.exchangeMode ? null : s.selectedRackIndex;
     renderRack($('rack'), {
       rack: me ? me.rack : [],
-      selectedIndex: selectedForRack,
+      // Selection highlight only in exchange mode (applied below)
+      selectedIndex: null,
       disabled: s.status !== 'active' || !me || me.resigned,
       onTileClick: function (idx) {
         if (s.exchangeMode) {
@@ -252,9 +324,6 @@ export function startLocalGamePage(root) {
         // Pointer UX selects on pointerdown; click is a no-op fallback
         game.selectRackTile(idx);
         render();
-      },
-      onTileDblClick: function (idx) {
-        autoPlaceFromRack(idx);
       }
     });
     if (s.exchangeMode) {
@@ -268,6 +337,17 @@ export function startLocalGamePage(root) {
 
     var preview = game.previewScore();
     var previewEl = $('turnPreview');
+    var statusEl = $('headerStatus');
+    if (statusEl) {
+      if (!challengeFxBusy) {
+        statusEl.textContent =
+          s.status === 'finished'
+            ? 'Game over'
+            : me
+              ? me.name + "'s turn"
+              : '';
+      }
+    }
     if (preview && preview.error) {
       previewEl.innerHTML = '<span style="color:var(--danger)">' + preview.error + '</span>';
     } else if (preview && preview.total != null) {
@@ -281,12 +361,10 @@ export function startLocalGamePage(root) {
           })
           .join(', ') +
         (preview.bingo ? ' +bingo' : '');
+    } else if (s.exchangeMode) {
+      previewEl.textContent = 'Exchange mode: select tiles, then confirm exchange';
     } else {
-      previewEl.textContent = s.exchangeMode
-        ? 'Exchange mode: select tiles, then confirm exchange'
-        : me
-          ? me.name + "'s turn — drag tiles to the board or rearrange your rack"
-          : '';
+      previewEl.textContent = '';
     }
 
     $('scores').innerHTML = s.players
@@ -357,6 +435,7 @@ export function startLocalGamePage(root) {
         className: 'primary',
         disabled: !canAct,
         onClick: function (e) {
+          if (!confirm('Pass your turn?')) return;
           game.pass();
           brief('Passed', e.target);
           actionsExpanded = false;
@@ -424,24 +503,16 @@ export function startLocalGamePage(root) {
       menuActions.push({
         label: 'Challenge (invalid)',
         className: 'danger',
-        disabled: s.status !== 'active',
+        disabled: s.status !== 'active' || challengeFxBusy,
         onClick: function (e) {
-          var r = game.challengeLocal(true);
-          if (r.error) brief(r.error, e.target);
-          else brief('Challenge succeeded — word removed', e.target);
-          actionsExpanded = false;
-          render();
+          runLocalChallenge(true, e.target);
         }
       });
       menuActions.push({
         label: 'Challenge (valid)',
-        disabled: s.status !== 'active',
+        disabled: s.status !== 'active' || challengeFxBusy,
         onClick: function (e) {
-          var r = game.challengeLocal(false);
-          if (r.error) brief(r.error, e.target);
-          else brief('Challenge failed — credit lost', e.target);
-          actionsExpanded = false;
-          render();
+          runLocalChallenge(false, e.target);
         }
       });
     }

@@ -828,16 +828,20 @@ async function doChallenge(sb: SupabaseClient, body: Record<string, unknown>) {
     if (!move || move.type !== "play") return fail("Nothing to challenge");
     if (Number(move.seat) === Number(viewer.seat)) return fail("Cannot challenge your own move");
 
-    const words = (move.words as Array<{ word: string }>) || [];
-    const upper = words.map((w) => String(w.word || "").toUpperCase());
+    const words = (move.words as Array<{ word: string; score?: number }>) || [];
+    const wordResults: Array<{ word: string; score?: number; valid: boolean }> = [];
     let allValid = true;
-    for (const w of upper) {
+    for (const w of words) {
+      const upper = String(w.word || "").toUpperCase();
       const found = await client.queryObject`
-        SELECT 1 FROM scrabble.dictionary WHERE word = ${w} LIMIT 1`;
-      if (!found.rows.length) {
-        allValid = false;
-        break;
-      }
+        SELECT 1 FROM scrabble.dictionary WHERE word = ${upper} LIMIT 1`;
+      const valid = found.rows.length > 0;
+      if (!valid) allValid = false;
+      wordResults.push({
+        word: w.word,
+        score: w.score,
+        valid,
+      });
     }
 
     // Also fail closed if dictionary empty? Prefer: if no dictionary rows, reject challenge with message
@@ -873,11 +877,12 @@ async function doChallenge(sb: SupabaseClient, body: Record<string, unknown>) {
           WHERE id = ${mover.id}::uuid`;
       }
 
-      // Annotate the play; keep current_seat on the next player (already advanced)
+      // Annotate the play with per-word validity; keep current_seat on the next player
       await client.queryArray`
         UPDATE scrabble.moves SET
           challenge_outcome = 'success',
-          challenged_by = ${viewer.id}::uuid
+          challenged_by = ${viewer.id}::uuid,
+          words = ${JSON.stringify(wordResults)}::jsonb
         WHERE id = ${move.id}::uuid`;
 
       await client.queryArray`
@@ -910,7 +915,7 @@ async function doChallenge(sb: SupabaseClient, body: Record<string, unknown>) {
       return ok({ ...scopedState(game, players, moves, viewer), outcome: "success" });
     }
 
-    // Failed challenge — play stands; challenge window stays open until turn completes
+    // Failed challenge — play stands; annotate words as valid; window stays open
     viewer.challenges_left = Number(viewer.challenges_left) - 1;
     await client.queryArray`
       UPDATE scrabble.players SET challenges_left = ${viewer.challenges_left}
@@ -918,7 +923,8 @@ async function doChallenge(sb: SupabaseClient, body: Record<string, unknown>) {
     await client.queryArray`
       UPDATE scrabble.moves SET
         challenge_outcome = 'failed',
-        challenged_by = ${viewer.id}::uuid
+        challenged_by = ${viewer.id}::uuid,
+        words = ${JSON.stringify(wordResults)}::jsonb
       WHERE id = ${move.id}::uuid`;
     await client.queryArray`
       INSERT INTO scrabble.moves (game_id, seat, type, challenged_by, challenge_outcome)

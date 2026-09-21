@@ -3,31 +3,19 @@
  */
 import { BOARD_SIZE, CENTER, premiumAt } from '../game/engine/board.mjs';
 import { tileValue } from '../game/engine/tiles.mjs';
-import { isSquareSelectable } from '../game/engine/placement.mjs';
 
 var PREM_LABEL = { DL: 'DL', TL: 'TL', DW: 'DW', TW: 'TW' };
 
 export function renderBoard(container, opts) {
   var board = opts.board;
   var placements = opts.placements || [];
-  var selectedTile = opts.selectedTile;
   var selectedBoard = opts.selectedBoard || null;
   var onCellClick = opts.onCellClick;
-  var interactive = opts.interactive !== false;
-  var movingFrom = opts.movingFrom || null;
-  var rackCount = opts.rackCount != null ? opts.rackCount : 7;
 
   var placementKeys = {};
   placements.forEach(function (p) {
     placementKeys[p.row + ',' + p.col] = p;
   });
-
-  var highlightPlacements = placements;
-  if (movingFrom) {
-    highlightPlacements = placements.filter(function (p) {
-      return !(p.row === movingFrom.row && p.col === movingFrom.col);
-    });
-  }
 
   container.innerHTML = '';
   container.className = 'board';
@@ -69,16 +57,6 @@ export function renderBoard(container, opts) {
         cell.innerHTML = '<span class="cell__prem">' + PREM_LABEL[prem] + '</span>';
       }
 
-      if (
-        interactive &&
-        selectedTile &&
-        !locked &&
-        !tent &&
-        isSquareSelectable(board, highlightPlacements, r, c, rackCount)
-      ) {
-        classes.push('cell--selectable');
-      }
-
       cell.className = classes.join(' ');
       cell.dataset.row = String(r);
       cell.dataset.col = String(c);
@@ -98,7 +76,6 @@ export function renderRack(container, opts) {
   var rack = opts.rack || [];
   var selectedIndex = opts.selectedIndex;
   var onTileClick = opts.onTileClick;
-  var onTileDblClick = opts.onTileDblClick;
   var disabled = !!opts.disabled;
 
   container.innerHTML = '';
@@ -124,10 +101,6 @@ export function renderRack(container, opts) {
     tile.addEventListener('click', function (e) {
       // Pointer UX handles selection; keep click for exchange mode / accessibility
       if (typeof onTileClick === 'function') onTileClick(idx, letter, e);
-    });
-    tile.addEventListener('dblclick', function (e) {
-      e.preventDefault();
-      if (typeof onTileDblClick === 'function') onTileDblClick(idx, letter);
     });
     container.appendChild(tile);
   });

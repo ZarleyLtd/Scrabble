@@ -47,10 +47,10 @@ a {
 }
 
 .app-header {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
   align-items: center;
-  justify-content: space-between;
-  gap: 1rem;
+  gap: 0.75rem 1rem;
   padding: 0.75rem 1rem;
   background: var(--bg-panel);
   border-bottom: 1px solid #334155;
@@ -60,11 +60,34 @@ a {
   margin: 0;
   font-size: 1.25rem;
   font-weight: 700;
+  justify-self: start;
 }
 
 .app-header a {
   text-decoration: none;
   color: var(--text);
+}
+
+.app-header__status {
+  margin: 0;
+  justify-self: center;
+  text-align: center;
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--text);
+  max-width: min(22rem, 48vw);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.app-header__status--flash {
+  color: var(--accent-2);
+}
+
+.app-header__meta {
+  justify-self: end;
+  text-align: right;
 }
 
 .panel {
@@ -346,10 +369,37 @@ button.success {
   pointer-events: none;
 }
 
-.cell--selectable {
-  outline: 2px solid var(--accent);
+.cell--drop-target {
+  outline: 2px solid var(--accent-2);
   outline-offset: -2px;
-  cursor: pointer;
+}
+
+.cell__challenge-x {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.35em;
+  font-weight: 800;
+  line-height: 1;
+  color: #dc2626;
+  text-shadow: 0 1px 0 rgba(255, 255, 255, 0.85);
+  background: rgba(220, 38, 38, 0.18);
+  pointer-events: none;
+  z-index: 4;
+  animation: challenge-x-in 0.18s ease-out;
+}
+
+@keyframes challenge-x-in {
+  from {
+    opacity: 0;
+    transform: scale(0.55);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
 }
 
 .cell--occupied {
@@ -538,7 +588,8 @@ button.success {
   z-index: 10000;
   pointer-events: none;
   margin: 0;
-  transform: translate(-50%, -50%) scale(1.08);
+  /* Sit above the pointer so a finger doesn't cover the tile */
+  transform: translate(-50%, calc(-100% - 16px)) scale(1.08);
   box-shadow: 0 6px 16px rgba(0, 0, 0, 0.35);
   cursor: grabbing;
 }
@@ -546,10 +597,6 @@ button.success {
 .board--dragging,
 .rack--dragging {
   cursor: grabbing;
-}
-
-.board--dragging .cell--selectable {
-  outline-color: var(--accent-2);
 }
 
 .tile--blank {
@@ -567,6 +614,11 @@ button.success {
 .turn-preview {
   font-size: 0.9rem;
   color: var(--muted);
+  margin: 0.35rem 0 0;
+}
+
+.turn-preview:empty {
+  display: none;
 }
 
 .turn-preview strong {
@@ -580,9 +632,33 @@ button.success {
   color: var(--muted);
 }
 
-.move-log div {
-  padding: 0.2rem 0;
+.move-log__row {
+  display: grid;
+  grid-template-columns: 5.5rem minmax(0, 1fr) 2.5rem;
+  gap: 0.15rem 0.45rem;
+  align-items: baseline;
+  padding: 0.25rem 0;
   border-bottom: 1px solid #1e293b;
+}
+
+.move-log__name {
+  font-weight: 700;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.move-log__detail {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.move-log__score {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+  font-weight: 600;
 }
 
 .lobby-players {

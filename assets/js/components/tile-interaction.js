@@ -39,6 +39,25 @@ export function attachTileInteraction(opts) {
     ghost = null;
   }
 
+  function clearDropHighlight() {
+    var prev = boardEl.querySelector('.cell--drop-target');
+    if (prev) prev.classList.remove('cell--drop-target');
+  }
+
+  function updateDropHighlight(clientX, clientY) {
+    clearDropHighlight();
+    if (!session || !session.dragging) return;
+    var c = ctx();
+    if (!canPlayBoard(c)) return;
+    var cell = cellUnder(clientX, clientY);
+    if (!cell) return;
+    var moving =
+      session.kind === 'board' ? { row: session.row, col: session.col } : null;
+    if (moving && cell.row === moving.row && cell.col === moving.col) return;
+    if (!canDropOnBoard(c, cell.row, cell.col, moving)) return;
+    cell.el.classList.add('cell--drop-target');
+  }
+
   function ensureGhost(letter, blank) {
     if (!ghost) {
       ghost = document.createElement('div');
@@ -154,6 +173,7 @@ export function attachTileInteraction(opts) {
   function endSession() {
     setSourceDimmed(false);
     clearRackShiftPreview();
+    clearDropHighlight();
     clearGhost();
     if (boardEl) boardEl.classList.remove('board--dragging');
     if (rackEl) rackEl.classList.remove('rack--dragging');
@@ -180,13 +200,26 @@ export function attachTileInteraction(opts) {
     return isSquareSelectable(c.board, list, row, col, rackCount);
   }
 
+  /** Place / move tiles on the board (own turn). */
+  function canPlayBoard(c) {
+    return !!c.interactive && !c.exchangeMode;
+  }
+
+  /** Reorder rack tiles (own turn, or while waiting). */
+  function canReorderRack(c) {
+    if (c.exchangeMode) return false;
+    if (c.allowRackReorder) return true;
+    return !!c.interactive;
+  }
+
   function onPointerDown(e) {
     if (e.button != null && e.button !== 0) return;
     var c = ctx();
-    if (!c.interactive || c.exchangeMode) return;
+    if (c.exchangeMode) return;
 
     var tileBtn = e.target.closest && e.target.closest('.tile');
     if (tileBtn && rackEl.contains(tileBtn)) {
+      if (!canReorderRack(c) && !canPlayBoard(c)) return;
       var idx = parseInt(tileBtn.dataset.index, 10);
       if (isNaN(idx)) return;
       // Do not preventDefault here — that blocks click/dblclick; prevent only once dragging
@@ -209,6 +242,8 @@ export function attachTileInteraction(opts) {
       }
       return;
     }
+
+    if (!canPlayBoard(c)) return;
 
     var cell = e.target.closest && e.target.closest('.cell');
     if (cell && boardEl.contains(cell)) {
@@ -270,8 +305,16 @@ export function attachTileInteraction(opts) {
     moveGhost(e.clientX, e.clientY);
     if (session.kind === 'rack') {
       var insertAt = rackInsertIndex(e.clientX, e.clientY);
-      if (insertAt >= 0) previewRackShift(session.index, insertAt);
-      else clearRackShiftPreview();
+      if (insertAt >= 0) {
+        previewRackShift(session.index, insertAt);
+        clearDropHighlight();
+      } else {
+        clearRackShiftPreview();
+        updateDropHighlight(e.clientX, e.clientY);
+      }
+    } else {
+      if (overRack(e.clientX, e.clientY)) clearDropHighlight();
+      else updateDropHighlight(e.clientX, e.clientY);
     }
     e.preventDefault();
   }
@@ -284,6 +327,7 @@ export function attachTileInteraction(opts) {
     endSession();
 
     if (!wasDragging) {
+      if (!canPlayBoard(c)) return;
       var now = Date.now();
       // Double-tap rack tile → auto-place
       if (snap.kind === 'rack' && typeof c.onAutoPlace === 'function') {
@@ -320,13 +364,14 @@ export function attachTileInteraction(opts) {
     lastRackTap = { index: -1, time: 0 };
     lastBoardTap = { row: -1, col: -1, time: 0 };
 
-    if (!c.interactive || c.exchangeMode) return;
+    if (c.exchangeMode) return;
 
     var x = e.clientX;
     var y = e.clientY;
 
     if (snap.kind === 'rack') {
       if (overRack(x, y)) {
+        if (!canReorderRack(c)) return;
         var to = rackInsertIndex(x, y);
         if (to < 0) return;
         var adjusted = to > snap.index ? to - 1 : to;
@@ -341,6 +386,7 @@ export function attachTileInteraction(opts) {
         return;
       }
 
+      if (!canPlayBoard(c)) return;
       var cell = cellUnder(x, y);
       if (cell && canDropOnBoard(c, cell.row, cell.col, null)) {
         if (typeof c.onPlaceFromRack === 'function') {
@@ -351,6 +397,8 @@ export function attachTileInteraction(opts) {
       }
       return;
     }
+
+    if (!canPlayBoard(c)) return;
 
     if (snap.kind === 'board') {
       if (overRack(x, y)) {
