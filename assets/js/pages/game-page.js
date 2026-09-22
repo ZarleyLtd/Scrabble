@@ -20,6 +20,20 @@ function $(id) {
   return document.getElementById(id);
 }
 
+function poolLetters(state, player) {
+  var letters = [];
+  (state.board || []).forEach(function (row) {
+    (row || []).forEach(function (cell) {
+      if (cell && cell.letter) letters.push(cell.letter);
+    });
+  });
+  (state.placements || []).forEach(function (p) {
+    if (p && p.letter) letters.push(p.letter);
+  });
+  if (player && player.rack) letters = letters.concat(player.rack);
+  return letters.join('');
+}
+
 function showBlankPicker(onPick) {
   var overlay = document.createElement('div');
   overlay.className = 'blank-modal';
@@ -103,23 +117,14 @@ export function startLocalGamePage(root) {
       return { row: pl.row, col: pl.col };
     });
     var challengedName = move.name || 'Player';
-    var challengerName = '';
     var current = s.players.find(function (p) {
       return p.seat === s.currentSeat;
     });
-    if (
-      current &&
-      !current.resigned &&
-      current.seat !== move.seat &&
-      current.challengesLeft > 0
-    ) {
-      challengerName = current.name;
-    } else {
-      var other = s.players.find(function (p) {
-        return !p.resigned && p.seat !== move.seat && p.challengesLeft > 0;
-      });
-      challengerName = other ? other.name : 'Player';
+    if (!current || current.resigned || current.seat === move.seat || !(current.challengesLeft > 0)) {
+      brief(current && current.seat === move.seat ? 'Cannot challenge your own move' : 'No challenges left', anchorEl);
+      return;
     }
+    var challengerName = current.name;
 
     challengeFxBusy = true;
     actionsExpanded = false;
@@ -196,7 +201,7 @@ export function startLocalGamePage(root) {
           return p.seat === s.currentSeat;
         });
         return {
-          interactive: s.status === 'active' && me && !me.resigned,
+          interactive: s.status === 'active' && me && !me.resigned && s.pendingFinisherSeat == null,
           exchangeMode: s.exchangeMode,
           board: s.board,
           placements: s.placements,
@@ -267,6 +272,7 @@ export function startLocalGamePage(root) {
     var me = s.players.find(function (p) {
       return p.seat === s.currentSeat;
     });
+    var finalWord = s.pendingFinisherSeat != null;
 
     var hasSelection =
       (s.selectedRackIndex != null || s.selectedBoard) && !s.exchangeMode;
@@ -278,7 +284,7 @@ export function startLocalGamePage(root) {
       selectedBoard: s.exchangeMode ? null : s.selectedBoard,
       movingFrom: s.selectedBoard,
       rackCount: (me ? me.rack.length : 0) + s.placements.length,
-      interactive: s.status === 'active' && me && !me.resigned,
+      interactive: s.status === 'active' && me && !me.resigned && !finalWord,
       onCellClick: function (row, col, isTent) {
         if (isTent) {
           // Selection / drag handled by pointer UX; ignore click recall
@@ -343,9 +349,11 @@ export function startLocalGamePage(root) {
         statusEl.textContent =
           s.status === 'finished'
             ? 'Game over'
-            : me
-              ? me.name + "'s turn"
-              : '';
+            : finalWord
+              ? 'Final word — challenge or end'
+              : me
+                ? me.name + "'s turn"
+                : '';
       }
     }
     if (preview && preview.error) {
@@ -375,7 +383,9 @@ export function startLocalGamePage(root) {
           (p.resigned ? ' resigned' : '') +
           '"><span>' +
           p.name +
-          (p.challengesLeft != null ? ' · C' + p.challengesLeft : '') +
+          (p.challengesLeft != null
+            ? ' · ' + p.challengesLeft + (Number(p.challengesLeft) === 1 ? ' challenge' : ' challenges')
+            : '') +
           '</span><span>' +
           p.score +
           '</span></li>'
@@ -396,10 +406,24 @@ export function startLocalGamePage(root) {
 
     var btns = $('actionButtons');
     var turnInProgress = s.placements.length > 0;
-    var canAct = s.status === 'active' && me && !me.resigned;
+    var canAct = s.status === 'active' && me && !me.resigned && !finalWord;
 
     var primary;
-    if (s.exchangeMode) {
+    if (finalWord) {
+      var iAmFinisher = me && me.seat === s.pendingFinisherSeat;
+      primary = {
+        label: iAmFinisher ? 'Waiting' : 'End game',
+        className: 'primary',
+        disabled: !!iAmFinisher || !me || me.resigned,
+        onClick: function (e) {
+          var r = game.endGame();
+          if (r.error) brief(r.error, e.target);
+          else brief('Game over', e.target);
+          actionsExpanded = false;
+          render();
+        }
+      };
+    } else if (s.exchangeMode) {
       primary = {
         label: 'Confirm Exchange',
         className: 'primary',
@@ -446,17 +470,6 @@ export function startLocalGamePage(root) {
 
     var menuActions = [];
     menuActions.push({
-      label: 'Get Letter Tiles',
-      disabled: !canAct || turnInProgress || s.exchangeMode,
-      onClick: function (e) {
-        var r = game.drawTiles();
-        if (r.error) brief(r.error, e.target);
-        else brief(r.drawn.length ? 'Drew ' + r.drawn.length : 'Rack full / bag empty', e.target);
-        actionsExpanded = false;
-        render();
-      }
-    });
-    menuActions.push({
       label: 'Recall',
       disabled: !canAct || !turnInProgress,
       onClick: function () {
@@ -499,18 +512,35 @@ export function startLocalGamePage(root) {
         render();
       }
     });
+    menuActions.push({
+      label: '2-letter words',
+      onClick: function (e) {
+        if (window.ScrabbleHeader) ScrabbleHeader.openTwoLetters(e.target);
+        actionsExpanded = false;
+        render();
+      }
+    });
     if (s.challengeableMoveIndex != null) {
+      var challengeMove = s.moves[s.challengeableMoveIndex];
+      var canChallenge =
+        s.status === 'active' &&
+        !challengeFxBusy &&
+        me &&
+        !me.resigned &&
+        challengeMove &&
+        me.seat !== challengeMove.seat &&
+        me.challengesLeft > 0;
       menuActions.push({
         label: 'Challenge (invalid)',
         className: 'danger',
-        disabled: s.status !== 'active' || challengeFxBusy,
+        disabled: !canChallenge,
         onClick: function (e) {
           runLocalChallenge(true, e.target);
         }
       });
       menuActions.push({
         label: 'Challenge (valid)',
-        disabled: s.status !== 'active' || challengeFxBusy,
+        disabled: !canChallenge,
         onClick: function (e) {
           runLocalChallenge(false, e.target);
         }
@@ -554,6 +584,23 @@ export function startLocalGamePage(root) {
     }
   }
 
+  if (window.ScrabbleHeader) {
+    ScrabbleHeader.setGameActive(true);
+    ScrabbleHeader.setTwoLetterHandler(function (anchor) {
+      var s = game.getState();
+      var current = s.players.find(function (p) {
+        return p.seat === s.currentSeat;
+      });
+      var letters = poolLetters(s, current);
+      ScrabbleAPI.twoLetterWords({ letters: letters })
+        .then(function (data) {
+          ScrabbleHeader.showTwoLetterPanel((data && data.words) || []);
+        })
+        .catch(function (e) {
+          brief(e.message || 'Could not load words', anchor);
+        });
+    });
+  }
   render();
   return game;
 }

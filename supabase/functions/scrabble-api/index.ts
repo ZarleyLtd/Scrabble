@@ -1,6 +1,7 @@
 /**
  * Scrabble API — Supabase Edge Function
- * Actions: createGame, joinGame, state, drawTiles, commitMove, pass, exchange, resign, challenge
+ * Actions: createGame, joinGame, lookupGame, listGames, state, reorderSeats, startGame,
+ * drawTiles, commitMove, pass, exchange, resign, challenge, endGame, twoLetterWords
  */
 
 import { createClient, SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2.49.1";
@@ -20,6 +21,7 @@ import {
 } from "../_shared/engine/index.mjs";
 
 const SCHEMA = "scrabble";
+const ADMIN_CODE = "4312";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -183,6 +185,8 @@ function scopedState(
     currentSeat: game.current_seat,
     turnNumber: game.turn_number,
     challengeableMoveId: game.challengeable_move_id,
+    pendingFinisherSeat:
+      game.pending_finisher_seat == null ? null : Number(game.pending_finisher_seat),
     consecutivePasses: game.consecutive_passes,
     settings: game.settings,
     version: game.version,
@@ -360,19 +364,12 @@ async function joinGame(_sb: SupabaseClient, body: Record<string, unknown>) {
     `;
     const player = playerIns.rows[0];
     const allPlayers = [...players, player];
-    let status = String(game.status);
+    const status = "lobby";
     const version = Number(game.version) + 1;
 
-    if (allPlayers.length >= Number(game.player_count)) {
-      status = "active";
-      await client.queryArray`
-        UPDATE scrabble.games SET status = 'active', version = ${version}, updated_at = now()
-        WHERE id = ${game.id}::uuid`;
-    } else {
-      await client.queryArray`
-        UPDATE scrabble.games SET version = ${version}, updated_at = now()
-        WHERE id = ${game.id}::uuid`;
-    }
+    await client.queryArray`
+      UPDATE scrabble.games SET version = ${version}, updated_at = now()
+      WHERE id = ${game.id}::uuid`;
 
     await persistPulse(client, String(game.id), version, Number(game.current_seat), status);
     await client.queryArray`COMMIT`;
@@ -407,6 +404,11 @@ async function getState(_sb: SupabaseClient, code: string, token: string) {
   } finally {
     await client.end();
   }
+}
+
+function finalWordBlock(game: Record<string, unknown>) {
+  if (game.pending_finisher_seat != null) return "The final word can still be challenged";
+  return null;
 }
 
 function checkTurn(game: Record<string, unknown>, viewer: Record<string, unknown>) {
@@ -491,6 +493,7 @@ async function maybeEndGame(
       status = 'finished',
       version = ${version},
       challengeable_move_id = null,
+      pending_finisher_seat = null,
       updated_at = now()
     WHERE id = ${game.id}::uuid
   `;
@@ -504,6 +507,7 @@ async function maybeEndGame(
   `;
   await persistPulse(client, String(game.id), version, Number(game.current_seat), "finished");
   game.status = "finished";
+  game.pending_finisher_seat = null;
   game.version = version;
   return { game, players, ended: true };
 }
@@ -561,6 +565,8 @@ async function doDrawTiles(body: Record<string, unknown>) {
       await client.queryObject<Record<string, unknown>>`
         SELECT * FROM scrabble.moves WHERE game_id = ${game.id}::uuid ORDER BY created_at`
     ).rows;
+    const pendingErr = finalWordBlock(game);
+    if (pendingErr) return fail(pendingErr);
     const turnErr = checkTurn(game, viewer);
     if (turnErr && !canDrawOpeningTiles(game, players, viewer, moves)) {
       return fail(turnErr);
@@ -599,6 +605,8 @@ async function doCommitMove(body: Record<string, unknown>) {
     // (committing is the next action)
     const turnErr = checkTurn(game, viewer);
     if (turnErr) return fail(turnErr);
+    const pendingErr = finalWordBlock(game);
+    if (pendingErr) return fail(pendingErr);
     if (!placements || !placements.length) return fail("Place at least one tile");
 
     const board = game.board as Array<Array<{ letter: string; blank: boolean; locked: boolean } | null>>;
@@ -651,6 +659,8 @@ async function doCommitMove(body: Record<string, unknown>) {
     const moveId = moveIns.rows[0].id;
 
     const version = Number(game.version) + 1;
+    const emptied = String(viewer.rack || "").length === 0;
+    const pendingSeat = emptied ? Number(viewer.seat) : null;
     // Don't advance yet — set challengeable first then advance
     const next = nextSeat(
       players.map((p) => ({ seat: Number(p.seat), resigned: !!p.resigned })),
@@ -663,6 +673,7 @@ async function doCommitMove(body: Record<string, unknown>) {
         bag = ${game.bag},
         consecutive_passes = 0,
         challengeable_move_id = ${moveId}::uuid,
+        pending_finisher_seat = ${pendingSeat},
         current_seat = ${next},
         turn_number = ${Number(game.turn_number) + 1},
         version = ${version},
@@ -670,20 +681,22 @@ async function doCommitMove(body: Record<string, unknown>) {
       WHERE id = ${game.id}::uuid`;
 
     game.challengeable_move_id = moveId;
+    game.pending_finisher_seat = pendingSeat;
     game.current_seat = next;
     game.turn_number = Number(game.turn_number) + 1;
     game.version = version;
 
-    // Gone out only if rack is still empty after refill (bag was empty)
-    const emptied = String(viewer.rack || "").length === 0;
-    const end = await maybeEndGame(
-      client,
-      game,
-      players,
-      emptied ? Number(viewer.seat) : null,
-    );
-    if (!end.ended) {
+    let resultGame = game;
+    let resultPlayers = players;
+    if (emptied) {
       await persistPulse(client, String(game.id), version, next, String(game.status));
+    } else {
+      const end = await maybeEndGame(client, game, players, null);
+      resultGame = end.game;
+      resultPlayers = end.players;
+      if (!end.ended) {
+        await persistPulse(client, String(game.id), version, next, String(game.status));
+      }
     }
 
     const moves = (
@@ -692,7 +705,7 @@ async function doCommitMove(body: Record<string, unknown>) {
     ).rows;
 
     return ok({
-      ...scopedState(end.game, players, moves, viewer),
+      ...scopedState(resultGame, resultPlayers, moves, viewer),
       move: { id: moveId, score: scored.total, words: scored.words },
       drawn: refill.drawn,
     });
@@ -705,6 +718,8 @@ async function doPass(body: Record<string, unknown>) {
   return mutate(code, token, body, async (client, game, players, viewer) => {
     const turnErr = checkTurn(game, viewer);
     if (turnErr) return fail(turnErr);
+    const pendingErr = finalWordBlock(game);
+    if (pendingErr) return fail(pendingErr);
 
     // Next action clears challenge window
     game.challengeable_move_id = null;
@@ -752,6 +767,8 @@ async function doExchange(body: Record<string, unknown>) {
   return mutate(code, token, body, async (client, game, players, viewer) => {
     const turnErr = checkTurn(game, viewer);
     if (turnErr) return fail(turnErr);
+    const pendingErr = finalWordBlock(game);
+    if (pendingErr) return fail(pendingErr);
     const rack = rackFromString(String(viewer.rack || ""));
     const bag = bagFromString(String(game.bag || ""));
     const result = exchangeTiles(rack, bag, tiles.map((t) => String(t).toUpperCase() === "BLANK" ? BLANK : String(t)));
@@ -801,6 +818,8 @@ async function doResign(body: Record<string, unknown>) {
   return mutate(code, token, body, async (client, game, players, viewer) => {
     if (game.status === "finished") return fail("Game already finished");
     if (viewer.resigned) return fail("Already resigned");
+    const pendingErr = finalWordBlock(game);
+    if (pendingErr) return fail(pendingErr);
     viewer.resigned = true;
     await client.queryArray`
       UPDATE scrabble.players SET resigned = true WHERE id = ${viewer.id}::uuid`;
@@ -915,11 +934,13 @@ async function doChallenge(sb: SupabaseClient, body: Record<string, unknown>) {
           board = ${JSON.stringify(board)}::jsonb,
           bag = ${game.bag},
           challengeable_move_id = null,
+          pending_finisher_seat = null,
           version = ${version},
           updated_at = now()
         WHERE id = ${game.id}::uuid`;
       game.board = board;
       game.challengeable_move_id = null;
+      game.pending_finisher_seat = null;
       game.version = version;
 
       await client.queryArray`
@@ -958,6 +979,19 @@ async function doChallenge(sb: SupabaseClient, body: Record<string, unknown>) {
       UPDATE scrabble.games SET version = ${version}, updated_at = now()
       WHERE id = ${game.id}::uuid`;
     game.version = version;
+    if (game.pending_finisher_seat != null) {
+      const end = await maybeEndGame(
+        client,
+        game,
+        players,
+        Number(game.pending_finisher_seat),
+      );
+      const moves = (
+        await client.queryObject<Record<string, unknown>>`
+          SELECT * FROM scrabble.moves WHERE game_id = ${game.id}::uuid ORDER BY created_at`
+      ).rows;
+      return ok({ ...scopedState(end.game, end.players, moves, viewer), outcome: "failed" });
+    }
     await persistPulse(client, String(game.id), version, Number(game.current_seat), String(game.status));
     const moves = (
       await client.queryObject<Record<string, unknown>>`
@@ -965,6 +999,204 @@ async function doChallenge(sb: SupabaseClient, body: Record<string, unknown>) {
     ).rows;
     return ok({ ...scopedState(game, players, moves, viewer), outcome: "failed" });
   });
+}
+
+async function lookupGame(_sb: SupabaseClient, body: Record<string, unknown>) {
+  const code = String(body.code || "").toUpperCase();
+  if (!code) return fail("code is required");
+  const client = await pgConnect();
+  try {
+    const game = await reloadGame(client, code);
+    if (!game) return ok({ exists: false });
+    const players = await reloadPlayers(client, String(game.id));
+    return ok({
+      exists: true,
+      code: game.code,
+      status: game.status,
+      playerCount: game.player_count,
+      players: players.map((p) => ({
+        seat: p.seat,
+        name: p.name,
+      })),
+    });
+  } finally {
+    await client.end();
+  }
+}
+
+async function listGames(_sb: SupabaseClient, body: Record<string, unknown>) {
+  if (String(body.adminCode || "") !== ADMIN_CODE) return fail("Admin code required", 403);
+  const client = await pgConnect();
+  try {
+    const rows = await client.queryObject<Record<string, unknown>>`
+      SELECT g.code, g.status, g.player_count, g.created_at, g.updated_at,
+             p.seat, p.name, p.score, p.resigned
+      FROM scrabble.games g
+      LEFT JOIN scrabble.players p ON p.game_id = g.id
+      ORDER BY g.updated_at DESC, p.seat
+    `;
+    const byCode = new Map<string, Record<string, unknown>>();
+    for (const row of rows.rows) {
+      const code = String(row.code);
+      let game = byCode.get(code);
+      if (!game) {
+        game = {
+          code,
+          status: row.status,
+          playerCount: row.player_count,
+          createdAt: row.created_at,
+          players: [] as Array<Record<string, unknown>>,
+        };
+        byCode.set(code, game);
+      }
+      if (row.seat != null) {
+        (game.players as Array<Record<string, unknown>>).push({
+          seat: row.seat,
+          name: row.name,
+          score: row.score,
+          resigned: row.resigned,
+        });
+      }
+    }
+    return ok({ games: Array.from(byCode.values()) });
+  } finally {
+    await client.end();
+  }
+}
+
+async function reorderSeats(body: Record<string, unknown>) {
+  const code = String(body.code || "");
+  const token = String(body.token || "");
+  const order = Array.isArray(body.order) ? body.order.map((id) => String(id)) : [];
+  return mutate(code, token, body, async (client, game, players, viewer) => {
+    if (!viewer.is_host) return fail("Only the host can set the seat order");
+    if (game.status !== "lobby") return fail("Seat order can only change in the lobby");
+    if (order.length !== players.length) return fail("Seat order must include every player");
+    const ids = new Set(players.map((p) => String(p.id)));
+    if (order.some((id) => !ids.has(id)) || new Set(order).size !== order.length) {
+      return fail("Seat order is invalid");
+    }
+
+    await client.queryArray`
+      UPDATE scrabble.players SET seat = seat + 10 WHERE game_id = ${game.id}::uuid`;
+    for (let i = 0; i < order.length; i++) {
+      await client.queryArray`
+        UPDATE scrabble.players SET seat = ${i} WHERE id = ${order[i]}::uuid`;
+    }
+    const version = Number(game.version) + 1;
+    await client.queryArray`
+      UPDATE scrabble.games SET version = ${version}, updated_at = now()
+      WHERE id = ${game.id}::uuid`;
+    game.version = version;
+    const nextPlayers = await reloadPlayers(client, String(game.id));
+    await persistPulse(client, String(game.id), version, Number(game.current_seat), "lobby");
+    const moves = await reloadMoves(client, String(game.id));
+    return ok(scopedState(game, nextPlayers, moves, viewer));
+  });
+}
+
+async function startGame(body: Record<string, unknown>) {
+  const code = String(body.code || "");
+  const token = String(body.token || "");
+  return mutate(code, token, body, async (client, game, players, viewer) => {
+    if (!viewer.is_host) return fail("Only the host can start the game");
+    if (game.status !== "lobby") return fail("Game already started");
+    if (players.length < Number(game.player_count)) return fail("Waiting for players");
+
+    const ordered = players.slice().sort((a, b) => Number(a.seat) - Number(b.seat));
+    let bag = bagFromString(String(game.bag || ""));
+    for (const p of ordered) {
+      const refill = refillRack(rackFromString(String(p.rack || "")), bag, RACK_SIZE);
+      p.rack = rackToString(refill.rack);
+      bag = refill.bag;
+      await client.queryArray`
+        UPDATE scrabble.players SET rack = ${p.rack} WHERE id = ${p.id}::uuid`;
+    }
+    game.bag = bagToString(bag);
+    const version = Number(game.version) + 1;
+    await client.queryArray`
+      UPDATE scrabble.games SET
+        status = 'active',
+        bag = ${game.bag},
+        version = ${version},
+        updated_at = now()
+      WHERE id = ${game.id}::uuid`;
+    game.status = "active";
+    game.version = version;
+    await persistPulse(client, String(game.id), version, Number(game.current_seat), "active");
+    const moves = await reloadMoves(client, String(game.id));
+    return ok(scopedState(game, ordered, moves, viewer));
+  });
+}
+
+async function doEndGame(body: Record<string, unknown>) {
+  const code = String(body.code || "");
+  const token = String(body.token || "");
+  return mutate(code, token, body, async (client, game, players, viewer) => {
+    if (game.pending_finisher_seat == null) return fail("Game is not waiting to end");
+    if (viewer.resigned) return fail("You have resigned");
+    if (Number(viewer.seat) === Number(game.pending_finisher_seat)) {
+      return fail("You cannot end your own final word");
+    }
+    const end = await maybeEndGame(client, game, players, Number(game.pending_finisher_seat));
+    const moves = await reloadMoves(client, String(game.id));
+    return ok(scopedState(end.game, end.players, moves, viewer));
+  });
+}
+
+function boardLetters(board: unknown): string {
+  if (!Array.isArray(board)) return "";
+  let out = "";
+  for (const row of board) {
+    if (!Array.isArray(row)) continue;
+    for (const cell of row) {
+      if (!cell || typeof cell !== "object") continue;
+      const letter = String((cell as { letter?: string }).letter || "").toUpperCase();
+      if (letter && letter !== "?") out += letter;
+    }
+  }
+  return out;
+}
+
+/** A word is kept only when every letter is on the board or the rack. Each blank covers one missing letter. */
+function wordFitsPool(word: string, pool: string): boolean {
+  const available = new Set<string>();
+  let blanks = 0;
+  for (const ch of pool.toUpperCase()) {
+    if (ch === "?") blanks += 1;
+    else if (ch >= "A" && ch <= "Z") available.add(ch);
+  }
+  const missing = new Set<string>();
+  for (const ch of word) {
+    if (!available.has(ch)) missing.add(ch);
+  }
+  return missing.size <= blanks;
+}
+
+async function twoLetterWords(_sb: SupabaseClient, body: Record<string, unknown>) {
+  let letters = String(body.letters || "").toUpperCase();
+  const code = String(body.code || "").toUpperCase();
+  const token = String(body.token || "");
+  const client = await pgConnect();
+  try {
+    if (code && token) {
+      const game = await reloadGame(client, code);
+      if (!game) return fail("Game not found", 404);
+      const players = await reloadPlayers(client, String(game.id));
+      const viewer = players.find((p) => p.token === token);
+      if (!viewer) return fail("Invalid player token", 401);
+      letters = boardLetters(game.board) + String(viewer.rack || "").toUpperCase();
+    }
+    const rows = await client.queryObject<{ word: string }>`
+      SELECT word FROM scrabble.dictionary WHERE char_length(word) = 2 ORDER BY word
+    `;
+    const words = rows.rows
+      .map((r) => String(r.word || "").toUpperCase())
+      .filter((word) => word.length === 2 && wordFitsPool(word, letters));
+    return ok({ words });
+  } finally {
+    await client.end();
+  }
 }
 
 async function handle(req: Request) {
@@ -998,8 +1230,16 @@ async function handle(req: Request) {
         return await createGame(sb, body);
       case "joinGame":
         return await joinGame(sb, body);
+      case "lookupGame":
+        return await lookupGame(sb, body);
+      case "listGames":
+        return await listGames(sb, body);
       case "state":
         return await getState(sb, String(body.code || ""), String(body.token || ""));
+      case "reorderSeats":
+        return await reorderSeats(body);
+      case "startGame":
+        return await startGame(body);
       case "drawTiles":
         return await doDrawTiles(body);
       case "commitMove":
@@ -1012,6 +1252,10 @@ async function handle(req: Request) {
         return await doResign(body);
       case "challenge":
         return await doChallenge(sb, body);
+      case "endGame":
+        return await doEndGame(body);
+      case "twoLetterWords":
+        return await twoLetterWords(sb, body);
       default:
         return fail("Unknown action: " + action);
     }

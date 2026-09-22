@@ -38,6 +38,11 @@ export function createLocalGame(options) {
       resigned: false
     });
   }
+  for (var d = 0; d < players.length; d++) {
+    var dealt = refillRack(players[d].rack, bag, RACK_SIZE);
+    players[d].rack = dealt.rack;
+    bag = dealt.bag;
+  }
 
   var state = {
     status: 'active',
@@ -55,6 +60,7 @@ export function createLocalGame(options) {
     exchangeSelected: {},
     moves: [],
     challengeableMoveIndex: null,
+    pendingFinisherSeat: null,
     version: 1,
     endReason: null
   };
@@ -79,6 +85,11 @@ export function createLocalGame(options) {
 
   function bump() {
     state.version += 1;
+  }
+
+  function finalWordError() {
+    if (state.pendingFinisherSeat != null) return 'The final word can still be challenged';
+    return null;
   }
 
   function finishIfNeeded(playedOutSeat) {
@@ -179,6 +190,8 @@ export function createLocalGame(options) {
     },
 
     toggleExchangeMode: function () {
+      var blocked = finalWordError();
+      if (blocked) return { error: blocked };
       state.exchangeMode = !state.exchangeMode;
       state.exchangeSelected = {};
       clearSelection();
@@ -187,6 +200,8 @@ export function createLocalGame(options) {
 
     placeOnBoard: function (row, col, rackIndexOpt) {
       if (state.status !== 'active') return { error: 'Game over' };
+      var blocked = finalWordError();
+      if (blocked) return { error: blocked };
       var p = currentPlayer();
       if (p.resigned) return { error: 'You have resigned' };
       if (state.exchangeMode) return { error: 'Exit exchange mode first' };
@@ -361,6 +376,8 @@ export function createLocalGame(options) {
 
     commitMove: function () {
       if (state.status !== 'active') return { error: 'Game over' };
+      var blocked = finalWordError();
+      if (blocked) return { error: blocked };
       var p = currentPlayer();
       var scored = scoreTurn(state.board, state.placements);
       if (!scored.ok) return { error: scored.error };
@@ -409,15 +426,23 @@ export function createLocalGame(options) {
       state.bag = refill.bag;
       move.drawn = (refill.drawn || []).join('');
 
-      // Gone out only if rack is still empty after refill (bag was empty)
-      finishIfNeeded(p.rack.length === 0 ? p.seat : null);
-      if (state.status === 'active') advanceTurn();
+      // Gone out only if rack is still empty after refill (bag was empty).
+      // Keep the play challengeable until someone ends the game or a challenge fails.
+      if (p.rack.length === 0) {
+        state.pendingFinisherSeat = p.seat;
+        advanceTurn();
+      } else {
+        finishIfNeeded(null);
+        if (state.status === 'active') advanceTurn();
+      }
       bump();
       return { ok: true, move: move, drawn: refill.drawn };
     },
 
     pass: function () {
       if (state.status !== 'active') return { error: 'Game over' };
+      var blocked = finalWordError();
+      if (blocked) return { error: blocked };
       if (state.placements.length) this.recallAll();
       var p = currentPlayer();
       state.consecutivePasses += 1;
@@ -431,6 +456,8 @@ export function createLocalGame(options) {
 
     confirmExchange: function () {
       if (state.status !== 'active') return { error: 'Game over' };
+      var blockedExchange = finalWordError();
+      if (blockedExchange) return { error: blockedExchange };
       if (state.placements.length) return { error: 'Recall tiles first' };
       var p = currentPlayer();
       var indices = Object.keys(state.exchangeSelected)
@@ -457,6 +484,8 @@ export function createLocalGame(options) {
     },
 
     resign: function (seat) {
+      var blockedResign = finalWordError();
+      if (blockedResign) return { error: blockedResign };
       var p = state.players.find(function (x) {
         return x.seat === (seat != null ? seat : state.currentSeat);
       });
@@ -476,20 +505,11 @@ export function createLocalGame(options) {
       var move = state.moves[state.challengeableMoveIndex];
       if (!move || move.type !== 'play') return { error: 'Nothing to challenge' };
 
-      var challenger = state.players.find(function (p) {
-        return !p.resigned && p.seat !== move.seat && p.challengesLeft > 0;
-      });
-      // Prefer current player if they can challenge; else any eligible opponent
       var current = currentPlayer();
-      if (
-        current &&
-        !current.resigned &&
-        current.seat !== move.seat &&
-        current.challengesLeft > 0
-      ) {
-        challenger = current;
-      }
-      if (!challenger) return { error: 'No challenges left' };
+      if (!current || current.resigned) return { error: 'You have resigned' };
+      if (current.seat === move.seat) return { error: 'Cannot challenge your own move' };
+      if (!(current.challengesLeft > 0)) return { error: 'No challenges left' };
+      var challenger = current;
 
       if (!assumeInvalid) {
         challenger.challengesLeft -= 1;
@@ -502,6 +522,11 @@ export function createLocalGame(options) {
           name: challenger.name,
           against: move.seat
         });
+        if (state.pendingFinisherSeat != null) {
+          var finisher = state.pendingFinisherSeat;
+          state.pendingFinisherSeat = null;
+          finishIfNeeded(finisher);
+        }
         bump();
         return {
           ok: true,
@@ -543,6 +568,7 @@ export function createLocalGame(options) {
         against: move.seat
       });
       state.challengeableMoveIndex = null;
+      state.pendingFinisherSeat = null;
       // Challenged player loses the turn; current seat stays on the next player
       bump();
       return {
@@ -552,6 +578,18 @@ export function createLocalGame(options) {
         challengerName: challenger.name,
         challengedName: move.name || (mover && mover.name) || ''
       };
+    },
+
+    endGame: function () {
+      if (state.pendingFinisherSeat == null) return { error: 'Game is not waiting to end' };
+      var current = currentPlayer();
+      if (current && current.seat === state.pendingFinisherSeat) {
+        return { error: 'You cannot end your own final word' };
+      }
+      var finisher = state.pendingFinisherSeat;
+      state.pendingFinisherSeat = null;
+      finishIfNeeded(finisher);
+      return { ok: true };
     }
   };
 }

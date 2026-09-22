@@ -192,29 +192,6 @@ export function startOnlineGamePage(ctx) {
     );
   }
 
-  /**
-   * Opening deal: empty rack, no turns yet, every earlier seat has already drawn.
-   */
-  function canDrawOpeningTiles() {
-    if (!snapshot || snapshot.status !== 'active') return false;
-    var me = myPlayer();
-    if (!me || me.resigned) return false;
-    if ((me.rack && me.rack.length) || (me.rackCount != null && me.rackCount > 0)) {
-      return false;
-    }
-    var moves = snapshot.moves || [];
-    var started = moves.some(function (m) {
-      return m.type === 'play' || m.type === 'pass' || m.type === 'exchange';
-    });
-    if (started) return false;
-    return (snapshot.players || []).every(function (p) {
-      if (Number(p.seat) >= Number(me.seat)) return true;
-      if (p.resigned) return true;
-      var n = p.rackCount != null ? p.rackCount : p.rack ? p.rack.length : 0;
-      return n > 0;
-    });
-  }
-
   function rackLetters() {
     var me = myPlayer();
     return (me && me.rack) || [];
@@ -246,13 +223,16 @@ export function startOnlineGamePage(ctx) {
   }
 
   function showJoin() {
+    if (window.ScrabbleHeader) ScrabbleHeader.setGameActive(false);
     ctx.joinPanel.classList.remove('hidden');
     ctx.joinPanel.innerHTML =
       '<h2>Join game ' +
       code +
       '</h2>' +
       '<div class="field"><label for="joinName">Your name</label>' +
-      '<input id="joinName" type="text" maxlength="24" autocomplete="nickname" /></div>' +
+      '<input id="joinName" type="text" maxlength="24" autocomplete="nickname" value="' +
+      (window.PlayerStorage ? PlayerStorage.lastName().replace(/"/g, '') : '') +
+      '" /></div>' +
       '<div class="btn-row"><button type="button" class="primary" id="btnJoin">Claim seat</button></div>';
     $('btnJoin').addEventListener('click', function () {
       var name = ($('joinName').value || '').trim();
@@ -277,28 +257,59 @@ export function startOnlineGamePage(ctx) {
   }
 
   function renderLobby() {
+    if (window.ScrabbleHeader) ScrabbleHeader.setGameActive(false);
     ctx.lobbyPanel.classList.remove('hidden');
     ctx.gameRoot.innerHTML = '';
-    var seats = [];
+    var seated = (snapshot.players || []).slice().sort(function (a, b) {
+      return a.seat - b.seat;
+    });
+    var me = myPlayer();
+    var host = !!(me && me.isHost);
+    var full = seated.length >= snapshot.playerCount;
+    var seatHtml = '';
     for (var i = 0; i < snapshot.playerCount; i++) {
-      var p = (snapshot.players || []).find(function (x) {
+      var p = seated.find(function (x) {
         return x.seat === i;
       });
-      seats.push(p ? p.name + (p.isHost ? ' (host)' : '') : '— waiting —');
+      var label = p
+        ? String(p.name)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;') + (p.isHost ? ' (host)' : '')
+        : '— waiting —';
+      var moves = '';
+      if (host && p) {
+        moves =
+          '<span class="lobby-seat__moves">' +
+          '<button type="button" data-move="' +
+          i +
+          '" data-dir="-1"' +
+          (i === 0 ? ' disabled' : '') +
+          '>Up</button>' +
+          '<button type="button" data-move="' +
+          i +
+          '" data-dir="1"' +
+          (i === seated.length - 1 ? ' disabled' : '') +
+          '>Down</button></span>';
+      }
+      seatHtml += '<li class="lobby-seat"><span>Seat ' + (i + 1) + ': ' + label + '</span>' + moves + '</li>';
     }
     var shareUrl = window.location.href.split('#')[0];
     ctx.lobbyPanel.innerHTML =
       '<h2>Lobby</h2>' +
-      '<p class="muted">Waiting for ' +
-      snapshot.playerCount +
-      ' players. Game starts when the last seat is claimed.</p>' +
+      '<p class="muted">' +
+      (host
+        ? 'Set the seat order, then start. Tiles are dealt in that order.'
+        : 'Waiting for the host to set the seat order and start.') +
+      '</p>' +
       '<ul class="lobby-players">' +
-      seats
-        .map(function (s, i) {
-          return '<li>Seat ' + (i + 1) + ': ' + s + '</li>';
-        })
-        .join('') +
+      seatHtml +
       '</ul>' +
+      (host
+        ? '<div class="btn-row"><button type="button" class="success" id="btnStart"' +
+          (full ? '' : ' disabled') +
+          '>Start</button></div>'
+        : '') +
       '<p class="muted">Share link</p>' +
       '<div class="share-box"><input id="shareUrl" readonly value="' +
       shareUrl.replace(/"/g, '&quot;') +
@@ -321,6 +332,46 @@ export function startOnlineGamePage(ctx) {
       var text = encodeURIComponent('Join my Scrabble game: ' + shareUrl);
       window.open('https://wa.me/?text=' + text, '_blank');
     });
+    ctx.lobbyPanel.querySelectorAll('[data-move]').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        var index = parseInt(btn.getAttribute('data-move'), 10);
+        var dir = parseInt(btn.getAttribute('data-dir'), 10);
+        var ordered = seated.slice();
+        var from = ordered.findIndex(function (p) {
+          return p.seat === index;
+        });
+        var to = from + dir;
+        if (from < 0 || to < 0 || to >= ordered.length) return;
+        var swapped = ordered.slice();
+        var tmp = swapped[from];
+        swapped[from] = swapped[to];
+        swapped[to] = tmp;
+        mutate(function () {
+          return ScrabbleAPI.reorderSeats({
+            code: code,
+            token: creds.token,
+            expectedVersion: snapshot.version,
+            order: swapped.map(function (p) {
+              return p.id;
+            })
+          });
+        });
+      });
+    });
+    var startBtn = $('btnStart');
+    if (startBtn) {
+      startBtn.addEventListener('click', function (e) {
+        mutate(function () {
+          return ScrabbleAPI.startGame({
+            code: code,
+            token: creds.token,
+            expectedVersion: snapshot.version
+          }).then(function () {
+            brief('Game started', e.target);
+          });
+        });
+      });
+    }
   }
 
   function lineOk(trial) {
@@ -343,7 +394,7 @@ export function startOnlineGamePage(ctx) {
         var me = myPlayer();
         var myTurn = isMyTurn();
         return {
-          interactive: myTurn,
+          interactive: myTurn && !(snapshot && snapshot.pendingFinisherSeat != null),
           allowRackReorder:
             !!me && !me.resigned && snapshot && snapshot.status === 'active',
           exchangeMode: exchangeMode,
@@ -510,6 +561,7 @@ export function startOnlineGamePage(ctx) {
   }
 
   function renderGame() {
+    if (window.ScrabbleHeader) ScrabbleHeader.setGameActive(true);
     ctx.lobbyPanel.classList.add('hidden');
     ctx.joinPanel.classList.add('hidden');
     if (!ctx.gameRoot.querySelector('.game-shell')) {
@@ -534,6 +586,7 @@ export function startOnlineGamePage(ctx) {
     var board = snapshot.board;
     var me = myPlayer();
     var myTurn = isMyTurn();
+    var finalWord = snapshot.pendingFinisherSeat != null;
     var hasSelection =
       (selectedRackIndex != null || selectedBoard) && !exchangeMode && myTurn;
 
@@ -544,8 +597,9 @@ export function startOnlineGamePage(ctx) {
       selectedBoard: exchangeMode || !myTurn ? null : selectedBoard,
       movingFrom: selectedBoard,
       rackCount: (me ? me.rack.length : 0) + placements.length,
-      interactive: myTurn,
+      interactive: myTurn && !finalWord,
       onCellClick: function (row, col, isTent) {
+        if (finalWord) return;
         if (!myTurn) {
           if (selectedRackIndex != null) {
             brief("It's not your turn", $('board'));
@@ -659,9 +713,11 @@ export function startOnlineGamePage(ctx) {
         statusEl.textContent =
           snapshot.status === 'finished'
             ? 'Game over'
-            : cur
-              ? cur.name + "'s turn"
-              : '';
+            : finalWord
+              ? 'Final word — challenge or end'
+              : cur
+                ? cur.name + "'s turn"
+                : '';
       }
     }
     if (preview && !preview.ok) {
@@ -692,7 +748,11 @@ export function startOnlineGamePage(ctx) {
           p.name +
           ' · tiles ' +
           (p.rackCount != null ? p.rackCount : p.rack ? p.rack.length : '?') +
-          (p.challengesLeft != null ? ' · C' + p.challengesLeft : '') +
+          (p.challengesLeft != null
+            ? ' · ' +
+              p.challengesLeft +
+              (Number(p.challengesLeft) === 1 ? ' challenge' : ' challenges')
+            : '') +
           '</span><span>' +
           p.score +
           '</span></li>'
@@ -717,12 +777,29 @@ export function startOnlineGamePage(ctx) {
 
     var btns = $('actionButtons');
     var turnInProgress = placements.length > 0;
-    var canAct = myTurn && me && !me.resigned;
-    var canGetLetters =
-      (canAct || canDrawOpeningTiles()) && !turnInProgress && !exchangeMode && me && !me.resigned;
+    var canAct = myTurn && me && !me.resigned && !finalWord;
 
     var primary;
-    if (exchangeMode) {
+    if (finalWord) {
+      var iAmFinisher = me && Number(me.seat) === Number(snapshot.pendingFinisherSeat);
+      primary = {
+        label: iAmFinisher ? 'Waiting' : 'End game',
+        className: 'primary',
+        disabled: !!iAmFinisher || !me || me.resigned || busy,
+        onClick: function (e) {
+          mutate(function () {
+            return ScrabbleAPI.endGame({
+              code: code,
+              token: creds.token,
+              expectedVersion: snapshot.version
+            }).then(function () {
+              brief('Game over', e.target);
+            });
+          });
+          actionsExpanded = false;
+        }
+      };
+    } else if (exchangeMode) {
       primary = {
         label: 'Confirm Exchange',
         className: 'primary',
@@ -793,22 +870,6 @@ export function startOnlineGamePage(ctx) {
 
     var menuActions = [];
     menuActions.push({
-      label: 'Get Letter Tiles',
-      disabled: !canGetLetters,
-      onClick: function (e) {
-        mutate(function () {
-          return ScrabbleAPI.drawTiles({
-            code: code,
-            token: creds.token,
-            expectedVersion: snapshot.version
-          }).then(function () {
-            brief('Tiles drawn', e.target);
-          });
-        });
-        actionsExpanded = false;
-      }
-    });
-    menuActions.push({
       label: 'Recall',
       disabled: !canAct || !turnInProgress,
       onClick: function () {
@@ -849,7 +910,7 @@ export function startOnlineGamePage(ctx) {
     menuActions.push({
       label: 'Resign',
       className: 'danger',
-      disabled: !(me && !me.resigned && snapshot.status === 'active'),
+      disabled: !(me && !me.resigned && snapshot.status === 'active') || finalWord,
       onClick: function (e) {
         if (!confirm('Resign? You can still watch.')) return;
         mutate(function () {
@@ -876,6 +937,11 @@ export function startOnlineGamePage(ctx) {
         disabled: !(me.challengesLeft > 0) || !!isOwnPlay || challengeFxBusy || busy,
         onClick: function (e) {
           if (busy || challengeFxBusy || !challengedPlay) return;
+          if (!(me.challengesLeft > 0)) {
+            brief('No challenges left', e.target);
+            return;
+          }
+          if (isOwnPlay) return;
           var play = challengedPlay;
           var challengePlacements = (play.placements || []).map(function (pl) {
             return { row: pl.row, col: pl.col };
@@ -941,6 +1007,14 @@ export function startOnlineGamePage(ctx) {
       });
     }
     menuActions.push({
+      label: '2-letter words',
+      onClick: function (e) {
+        if (window.ScrabbleHeader) ScrabbleHeader.openTwoLetters(e.target);
+        actionsExpanded = false;
+        renderGame();
+      }
+    });
+    menuActions.push({
       label: 'Share WhatsApp',
       onClick: function () {
         var text = encodeURIComponent('Scrabble game: ' + window.location.href);
@@ -998,6 +1072,18 @@ export function startOnlineGamePage(ctx) {
     else renderGame();
   }
 
+  if (window.ScrabbleHeader) {
+    ScrabbleHeader.setTwoLetterHandler(function (anchor) {
+      if (!creds || !creds.token) return;
+      ScrabbleAPI.twoLetterWords({ code: code, token: creds.token })
+        .then(function (data) {
+          ScrabbleHeader.showTwoLetterPanel((data && data.words) || []);
+        })
+        .catch(function (e) {
+          brief(e.message || 'Could not load words', anchor);
+        });
+    });
+  }
   // Boot
   if (creds && creds.token) {
     refresh().catch(function (e) {

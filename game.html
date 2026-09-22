@@ -8,7 +8,7 @@
 </head>
 <body>
   <header class="app-header">
-    <h1><a href="index.html">Scrabble</a></h1>
+    <h1><button type="button" id="scrabbleTitle" class="scrabble-title">Scrabble</button></h1>
     <p class="app-header__status" id="headerStatus" aria-live="polite"></p>
     <span class="muted app-header__meta" id="headerMeta"></span>
   </header>
@@ -22,6 +22,8 @@
   <script src="assets/js/utils/brief-message.js"></script>
   <script src="assets/js/utils/api.js"></script>
   <script src="assets/js/utils/player-storage.js"></script>
+  <script src="assets/js/utils/admin-mode.js"></script>
+  <script src="assets/js/utils/header-menu.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.49.1/dist/umd/supabase.min.js"></script>
   <script src="assets/js/utils/realtime.js"></script>
   <script type="module" src="assets/js/pages/game-bootstrap.js"></script>

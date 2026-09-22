@@ -5,6 +5,7 @@
   'use strict';
 
   var PREFIX = 'scrabble_player_';
+  var LAST_NAME_KEY = 'scrabble_last_name';
 
   function key(code) {
     return PREFIX + String(code || '').toUpperCase();
@@ -22,6 +23,20 @@
             name: player.name
           })
         );
+        if (player && player.name) PlayerStorage.rememberName(player.name);
+      } catch (e) {}
+    },
+    lastName: function () {
+      try {
+        return localStorage.getItem(LAST_NAME_KEY) || '';
+      } catch (e) {
+        return '';
+      }
+    },
+    rememberName: function (name) {
+      try {
+        var trimmed = String(name || '').trim();
+        if (trimmed) localStorage.setItem(LAST_NAME_KEY, trimmed);
       } catch (e) {}
     },
     load: function (code) {

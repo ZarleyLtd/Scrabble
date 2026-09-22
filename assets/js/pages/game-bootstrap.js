@@ -9,6 +9,8 @@ function $(id) {
   return document.getElementById(id);
 }
 
+if (window.ScrabbleHeader) ScrabbleHeader.mount();
+
 var params = new URLSearchParams(window.location.search);
 var isLocal = params.get('local') === '1';
 var code = (params.get('g') || params.get('code') || '').toUpperCase();

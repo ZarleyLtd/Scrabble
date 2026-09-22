@@ -80,6 +80,24 @@
     },
     challenge: function (body) {
       return post('challenge', body);
+    },
+    lookupGame: function (code) {
+      return post('lookupGame', { code: code });
+    },
+    listGames: function (adminCode) {
+      return post('listGames', { adminCode: adminCode });
+    },
+    reorderSeats: function (body) {
+      return post('reorderSeats', body);
+    },
+    startGame: function (body) {
+      return post('startGame', body);
+    },
+    endGame: function (body) {
+      return post('endGame', body);
+    },
+    twoLetterWords: function (body) {
+      return post('twoLetterWords', body);
     }
   };
 })(typeof window !== 'undefined' ? window : this);

@@ -10,6 +10,8 @@ var SCRABBLE_CONFIG = {
    * Leave blank until Realtime is needed; online play still works via polling heartbeat fallback. */
   SUPABASE_ANON_KEY: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inl6eWlweHZsc294ZnBod29iZmtiIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzY4ODU4OTksImV4cCI6MjA5MjQ2MTg5OX0.Gq7KB_FtV43fijZ3Z3lvq1JH6_Bm0fjgdHZ1MN9NmFg',
   BASE_PATH: '',
+  /** Temporary admin unlock. Also checked on the server for listGames. */
+  ADMIN_CODE: '4312',
   DEFAULT_CHALLENGES: 2,
   DEFAULT_PLAYER_COUNT: 2,
   MIN_PLAYERS: 2,

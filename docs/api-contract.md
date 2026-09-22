@@ -28,8 +28,36 @@ Returns: `{ game: { id, code, status, playerCount, version }, player: { id, seat
 { "action": "joinGame", "code": "XXXX", "name": "Bob" }
 ```
 
-Claims next free seat. When last seat fills, status becomes `active`.  
-Returns scoped state + player credentials.
+Claims next free seat. The game stays in `lobby` until the host starts it.  
+Returns scoped state + player credentials. No racks, bag, or tokens for other players.
+
+### lookupGame (POST)
+
+```json
+{ "action": "lookupGame", "code": "XXXX" }
+```
+
+Returns `{ exists, status, playerCount, players: [{ seat, name }] }` when the game exists, or `{ exists: false }`. No racks, bag, or tokens.
+
+### listGames (POST)
+
+```json
+{ "action": "listGames", "adminCode": "...." }
+```
+
+Admin only. Returns `{ games: [{ code, status, playerCount, createdAt, players: [{ seat, name, score, resigned }] }] }` for `lobby`, `active`, and `finished`. No racks, bag, or tokens.
+
+### reorderSeats (POST)
+
+Host only, while `lobby`. `{ code, token, expectedVersion, order: [playerId, ...] }` from first seat to last.
+
+### startGame (POST)
+
+Host only, when every seat is filled. Deals a full rack to each player in seat order and sets status `active`.
+
+### endGame (POST)
+
+`{ code, token, expectedVersion }`. Any player except the one who played out may close the final-word window. Applies end-of-game scoring.
 
 ### state (GET or POST)
 
@@ -67,7 +95,11 @@ Validates placement, scores, advances turn, sets `challengeableMoveId`.
 ```
 
 Only while `challengeableMoveId` is set and challenger is not the mover.  
-Success (invalid words): revert move. Failure: decrement `challengesLeft`.
+Success (invalid words): revert move and clear a pending finish. Failure: decrement `challengesLeft`. A failed challenge on the final word ends the game.
+
+### twoLetterWords (POST)
+
+`{ code, token }` uses that player's rack plus the letters already on the board. `{ letters }` is the same combined pool for local play. Returns `{ words }` — dictionary words of length 2 whose letters are all in that pool. A blank (`?`) can stand in for one missing letter. No racks are returned.
 
 ## Realtime
 

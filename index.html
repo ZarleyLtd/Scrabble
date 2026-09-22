@@ -8,39 +8,24 @@
 </head>
 <body>
   <header class="app-header">
-    <h1><a href="index.html">Scrabble</a></h1>
+    <h1><button type="button" id="scrabbleTitle" class="scrabble-title">Scrabble</button></h1>
   </header>
 
-  <main class="panel">
-    <h2>New Game</h2>
-    <p class="muted">Create a local practice game, or start an online game and share the link.</p>
-
-    <div class="field">
-      <label for="playerCount">Number of players</label>
-      <select id="playerCount">
-        <option value="2" selected>2</option>
-        <option value="3">3</option>
-        <option value="4">4</option>
-      </select>
-    </div>
-
-    <div class="field">
-      <label for="hostName">Your name</label>
-      <input id="hostName" type="text" maxlength="24" placeholder="Player 1" autocomplete="nickname" />
-    </div>
-
+  <main class="panel" id="homePanel">
+    <h2>Scrabble</h2>
     <div class="btn-row">
-      <button type="button" class="primary" id="btnLocal">Play locally (same device)</button>
-      <button type="button" class="success" id="btnOnline">New online game</button>
+      <button type="button" class="success" id="btnNew">New Game</button>
+      <button type="button" class="primary" id="btnJoin">Join Game</button>
     </div>
-    <p class="muted" id="onlineHint">Online games need the Supabase Edge Function deployed. Local play works offline.</p>
-    <p class="error-banner hidden" id="onlineError"></p>
+    <p class="error-banner hidden" id="homeError"></p>
   </main>
 
   <script src="assets/js/config/app-config.js"></script>
   <script src="assets/js/utils/brief-message.js"></script>
   <script src="assets/js/utils/api.js"></script>
   <script src="assets/js/utils/player-storage.js"></script>
+  <script src="assets/js/utils/admin-mode.js"></script>
+  <script src="assets/js/utils/header-menu.js"></script>
   <script src="assets/js/pages/index-page.js"></script>
 </body>
 </html>
