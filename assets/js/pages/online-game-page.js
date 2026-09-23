@@ -81,6 +81,7 @@ export function startOnlineGamePage(ctx) {
 
   function applySnapshotData(data, prevRack) {
     snapshot = data;
+    syncCreds(data);
     preserveRackOrder(prevRack);
     if (data.gameId && window.ScrabbleRealtime) {
       ensureRealtime(data.gameId);
@@ -156,13 +157,15 @@ export function startOnlineGamePage(ctx) {
     realtimeReady = true;
     ScrabbleRealtime.subscribe(
       gameId,
-      function (row) {
-        if (!snapshot || row.version > snapshot.version) refresh().catch(function () {});
+      function (row, eventType) {
+        if (!snapshot || eventType === 'DELETE' || row.version > snapshot.version) {
+          refresh().catch(noteStateError);
+        }
       },
       function (connected) {
         if (!connected) {
           ScrabbleRealtime.startHeartbeat(function () {
-            refresh().catch(function () {});
+            refresh().catch(noteStateError);
           });
         } else {
           ScrabbleRealtime.stopHeartbeat();
@@ -170,15 +173,68 @@ export function startOnlineGamePage(ctx) {
       }
     );
     document.addEventListener('visibilitychange', function () {
-      if (document.visibilityState === 'visible') refresh().catch(function () {});
+      if (document.visibilityState === 'visible') refresh().catch(noteStateError);
     });
   }
 
   function myPlayer() {
     if (!snapshot || !creds) return null;
     return (snapshot.players || []).find(function (p) {
-      return p.id === creds.playerId || p.seat === creds.seat;
+      return String(p.id) === String(creds.playerId);
     });
+  }
+
+  function syncCreds(data) {
+    if (!data || !creds || !window.PlayerStorage) return;
+    var me = (data.players || []).find(function (p) {
+      return String(p.id) === String(creds.playerId);
+    });
+    if (!me) return;
+    creds.seat = me.seat;
+    creds.name = me.name;
+    PlayerStorage.save(code, {
+      id: creds.playerId,
+      token: creds.token,
+      seat: me.seat,
+      name: me.name
+    });
+  }
+
+  function clearPlaySurface() {
+    if (tileUX) {
+      tileUX.destroy();
+      tileUX = null;
+    }
+    ctx.lobbyPanel.classList.add('hidden');
+    ctx.gameRoot.innerHTML = '';
+  }
+
+  function showCancelled() {
+    if (window.ScrabbleRealtime) ScrabbleRealtime.unsubscribe();
+    if (window.PlayerStorage) PlayerStorage.clear(code);
+    creds = null;
+    snapshot = null;
+    clearPlaySurface();
+    ctx.joinPanel.classList.remove('hidden');
+    ctx.joinPanel.innerHTML =
+      '<h2>Game ' +
+      code +
+      '</h2><p>This game was cancelled.</p><p><a href="index.html">Back home</a></p>';
+  }
+
+  function noteStateError(e) {
+    if (e && e.status === 404) {
+      showCancelled();
+      return true;
+    }
+    if (e && e.status === 401) {
+      if (window.PlayerStorage) PlayerStorage.clear(code);
+      creds = null;
+      showJoin();
+      setError('Enter your name to rejoin');
+      return true;
+    }
+    return false;
   }
 
   function isMyTurn() {
@@ -211,9 +267,10 @@ export function startOnlineGamePage(ctx) {
         return refresh();
       })
       .catch(function (e) {
+        if (noteStateError(e)) return;
         if (e.code === 409) {
           brief('Board updated — refreshing', ctx.gameRoot);
-          return refresh();
+          return refresh().catch(noteStateError);
         }
         setError(e.message || String(e));
       })
@@ -224,6 +281,7 @@ export function startOnlineGamePage(ctx) {
 
   function showJoin() {
     if (window.ScrabbleHeader) ScrabbleHeader.setGameActive(false);
+    clearPlaySurface();
     ctx.joinPanel.classList.remove('hidden');
     ctx.joinPanel.innerHTML =
       '<h2>Join game ' +
@@ -233,7 +291,7 @@ export function startOnlineGamePage(ctx) {
       '<input id="joinName" type="text" maxlength="24" autocomplete="nickname" value="' +
       (window.PlayerStorage ? PlayerStorage.lastName().replace(/"/g, '') : '') +
       '" /></div>' +
-      '<div class="btn-row"><button type="button" class="primary" id="btnJoin">Claim seat</button></div>';
+      '<div class="btn-row"><button type="button" class="primary" id="btnJoin">Join</button></div>';
     $('btnJoin').addEventListener('click', function () {
       var name = ($('joinName').value || '').trim();
       if (!name) {
@@ -241,16 +299,23 @@ export function startOnlineGamePage(ctx) {
         return;
       }
       setError('');
-      ScrabbleAPI.joinGame({ code: code, name: name })
+      ScrabbleAPI.reclaimOrJoin(code, name)
         .then(function (data) {
-          creds = { playerId: data.player.id, token: data.player.token, seat: data.player.seat, name: data.player.name };
+          creds = {
+            playerId: data.player.id,
+            token: data.player.token,
+            seat: data.player.seat,
+            name: data.player.name
+          };
           PlayerStorage.save(code, data.player);
-          snapshot = data;
           ctx.joinPanel.classList.add('hidden');
-          if (data.gameId) ensureRealtime(data.gameId);
-          renderAll();
+          return applySnapshotData(data);
         })
         .catch(function (e) {
+          if (e && e.status === 404) {
+            setError('No game with that code.');
+            return;
+          }
           setError(e.message || String(e));
         });
     });
@@ -308,7 +373,7 @@ export function startOnlineGamePage(ctx) {
       (host
         ? '<div class="btn-row"><button type="button" class="success" id="btnStart"' +
           (full ? '' : ' disabled') +
-          '>Start</button></div>'
+          '>Start</button><button type="button" class="danger" id="btnCancel">Cancel game</button></div>'
         : '') +
       '<p class="muted">Share link</p>' +
       '<div class="share-box"><input id="shareUrl" readonly value="' +
@@ -370,6 +435,38 @@ export function startOnlineGamePage(ctx) {
             brief('Game started', e.target);
           });
         });
+      });
+    }
+    var cancelBtn = $('btnCancel');
+    if (cancelBtn) {
+      cancelBtn.addEventListener('click', function () {
+        function runCancel() {
+          setError('');
+          ScrabbleAPI.cancelGame({
+            code: code,
+            token: creds.token,
+            expectedVersion: snapshot.version
+          })
+            .then(function () {
+              if (window.PlayerStorage) PlayerStorage.clear(code);
+              window.location.href = 'index.html';
+            })
+            .catch(function (e) {
+              if (noteStateError(e)) return;
+              setError(e.message || String(e));
+            });
+        }
+        if (window.ScrabbleAdmin && ScrabbleAdmin.confirmAction) {
+          ScrabbleAdmin.confirmAction(
+            'Cancel game',
+            'Cancel this game? It will be removed for everyone.',
+            'Cancel game',
+            runCancel
+          );
+          return;
+        }
+        if (!confirm('Cancel this game?')) return;
+        runCancel();
       });
     }
   }
@@ -1084,17 +1181,31 @@ export function startOnlineGamePage(ctx) {
         });
     });
   }
+  document.addEventListener(
+    'click',
+    function (e) {
+      if (!actionsExpanded) return;
+      if (e.target.closest && e.target.closest('.action-menu')) return;
+      actionsExpanded = false;
+      if (snapshot && snapshot.status !== 'lobby') renderGame();
+    },
+    true
+  );
+  document.addEventListener('click', function (e) {
+    if (!actionsExpanded) return;
+    if (e.target.closest && e.target.closest('.action-menu__toggle')) return;
+    actionsExpanded = false;
+    if (snapshot && snapshot.status !== 'lobby') renderGame();
+  });
+
   // Boot
   if (creds && creds.token) {
     refresh().catch(function (e) {
-      // Token invalid — rejoin
-      PlayerStorage.clear(code);
-      creds = null;
+      if (noteStateError(e)) return;
       showJoin();
-      setError(e.message || 'Session expired — join again');
+      setError(e.message || 'Could not open this game');
     });
   } else {
     showJoin();
-    // Still try public lobby peek? Need token for state — so join only.
   }
 }

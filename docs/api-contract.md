@@ -4,7 +4,7 @@ Edge Function: `scrabble-api`
 Envelope: `{ "error": string|null, "data": unknown }`  
 Schema: `scrabble`
 
-All mutating actions require `token` (player secret from join) except `createGame`.  
+All mutating actions require `token` (player secret from join) except `createGame` and `reclaimSeat`.  
 Mutations accept `expectedVersion`; mismatch returns HTTP 409 with `{ error, data: { version } }`.
 
 ## Actions
@@ -28,8 +28,21 @@ Returns: `{ game: { id, code, status, playerCount, version }, player: { id, seat
 { "action": "joinGame", "code": "XXXX", "name": "Bob" }
 ```
 
-Claims next free seat. The game stays in `lobby` until the host starts it.  
+Claims the next free seat while the game is still in `lobby`.  
+Refuses a name that already belongs to someone in the game.  
 Returns scoped state + player credentials. No racks, bag, or tokens for other players.
+
+### reclaimSeat (POST)
+
+```json
+{ "action": "reclaimSeat", "code": "XXXX", "name": "Bob" }
+```
+
+Matches one existing player by trimmed, case-insensitive name in `lobby`, `active`, or `finished`.  
+Replaces that player's token, so the previous browser can no longer act, and returns scoped state plus the new credentials.  
+The host is whoever has `is_host`; reclaiming that name restores host actions.  
+`No player with that name` means the client may `joinGame` when the lobby still has a free seat.  
+`More than one player has that name` is an error.
 
 ### lookupGame (POST)
 
@@ -47,13 +60,30 @@ Returns `{ exists, status, playerCount, players: [{ seat, name }] }` when the ga
 
 Admin only. Returns `{ games: [{ code, status, playerCount, createdAt, players: [{ seat, name, score, resigned }] }] }` for `lobby`, `active`, and `finished`. No racks, bag, or tokens.
 
+### deleteGame (POST)
+
+```json
+{ "action": "deleteGame", "code": "XXXX", "adminCode": "...." }
+```
+
+Admin only. Deletes the game in any status. Players, moves, and the pulse row cascade with it. The dictionary is left in place.
+
 ### reorderSeats (POST)
 
-Host only, while `lobby`. `{ code, token, expectedVersion, order: [playerId, ...] }` from first seat to last.
+Host only, while `lobby`. `{ code, token, expectedVersion, order: [playerId, ...] }` from first seat to last.  
+Seats are parked at 4–7, then written back as 0..n-1. Seat 0 plays first.
 
 ### startGame (POST)
 
 Host only, when every seat is filled. Deals a full rack to each player in seat order and sets status `active`.
+
+### cancelGame (POST)
+
+```json
+{ "action": "cancelGame", "code": "XXXX", "token": "...", "expectedVersion": 2 }
+```
+
+Host only, while `lobby`. Deletes the game. Players, moves, and the pulse row cascade with it.
 
 ### endGame (POST)
 

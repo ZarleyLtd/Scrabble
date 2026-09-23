@@ -6,6 +6,21 @@
 
   var twoLetterHandler = null;
   var menuOpen = false;
+  var twoLetterCloser = null;
+  var twoLetterTimer = null;
+
+  function hideTwoLetterPanel() {
+    if (twoLetterTimer) {
+      clearTimeout(twoLetterTimer);
+      twoLetterTimer = null;
+    }
+    if (twoLetterCloser) {
+      document.removeEventListener('click', twoLetterCloser, true);
+      twoLetterCloser = null;
+    }
+    var existing = document.getElementById('twoLetterPanel');
+    if (existing && existing.parentNode) existing.parentNode.removeChild(existing);
+  }
 
   function titleButton() {
     return document.getElementById('scrabbleTitle');
@@ -20,8 +35,7 @@
   }
 
   function showTwoLetterPanel(words) {
-    var existing = document.getElementById('twoLetterPanel');
-    if (existing && existing.parentNode) existing.parentNode.removeChild(existing);
+    hideTwoLetterPanel();
     var panel = document.createElement('div');
     panel.id = 'twoLetterPanel';
     panel.className = 'two-letter-panel';
@@ -36,10 +50,14 @@
     panel.innerHTML =
       '<p class="two-letter-panel__title">2-letter words</p>' +
       (items ? '<ul>' + items + '</ul>' : '<p class="muted">No matching 2-letter words</p>');
-    panel.addEventListener('click', function () {
-      if (panel.parentNode) panel.parentNode.removeChild(panel);
-    });
     document.body.appendChild(panel);
+    twoLetterTimer = window.setTimeout(function () {
+      twoLetterTimer = null;
+      twoLetterCloser = function () {
+        hideTwoLetterPanel();
+      };
+      document.addEventListener('click', twoLetterCloser, true);
+    }, 0);
   }
 
   function openMenu() {
@@ -53,10 +71,11 @@
     menu.className = 'header-menu';
     menu.setAttribute('role', 'menu');
 
-    function addItem(label, onClick) {
+    function addItem(label, onClick, className) {
       var item = document.createElement('button');
       item.type = 'button';
       item.textContent = label;
+      if (className) item.className = className;
       item.addEventListener('click', function (e) {
         e.stopPropagation();
         closeMenu();
@@ -82,6 +101,15 @@
       addItem('View games', function () {
         ScrabbleAdmin.openGameList();
       });
+      if (ScrabbleAdmin.gameCode()) {
+        addItem(
+          'Delete Game',
+          function () {
+            ScrabbleAdmin.deleteCurrentGame(btn);
+          },
+          'danger'
+        );
+      }
     }
 
     var h1 = btn.parentNode;

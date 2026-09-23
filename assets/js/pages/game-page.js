@@ -601,6 +601,23 @@ export function startLocalGamePage(root) {
         });
     });
   }
+  document.addEventListener(
+    'click',
+    function (e) {
+      if (!actionsExpanded) return;
+      if (e.target.closest && e.target.closest('.action-menu')) return;
+      actionsExpanded = false;
+      render();
+    },
+    true
+  );
+  document.addEventListener('click', function (e) {
+    if (!actionsExpanded) return;
+    if (e.target.closest && e.target.closest('.action-menu__toggle')) return;
+    actionsExpanded = false;
+    render();
+  });
+
   render();
   return game;
 }

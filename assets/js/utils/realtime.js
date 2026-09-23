@@ -46,8 +46,8 @@
           filter: 'game_id=eq.' + gameId
         },
         function (payload) {
-          var row = payload.new || payload.old;
-          if (row && typeof onPulse === 'function') onPulse(row);
+          var row = payload.new || payload.old || {};
+          if (typeof onPulse === 'function') onPulse(row, payload.eventType);
         }
       )
       .subscribe(function (status) {

@@ -11,18 +11,23 @@
 
   function parseJsonResponse(res) {
     return res.json().then(function (json) {
-      if (res.status === 409) {
-        var err = new Error((json && json.error) || 'Version conflict');
-        err.code = 409;
-        err.data = json && json.data;
+      if (!res.ok || (json && json.error)) {
+        var err = new Error(
+          (json && (json.error || json.message)) || 'Request failed (' + res.status + ')'
+        );
+        err.status = res.status;
+        if (res.status === 409) {
+          err.code = 409;
+          err.data = json && json.data;
+        }
         throw err;
       }
-      if (!res.ok) {
-        throw new Error((json && (json.error || json.message)) || 'Request failed (' + res.status + ')');
-      }
-      if (json && json.error) throw new Error(json.error);
       return json.data;
     });
+  }
+
+  function isNoSuchPlayer(e) {
+    return !!(e && /no player with that name/i.test(e.message || ''));
   }
 
   function get(action, params) {
@@ -60,6 +65,25 @@
     joinGame: function (body) {
       return post('joinGame', body);
     },
+    reclaimSeat: function (body) {
+      return post('reclaimSeat', body);
+    },
+    /** Reclaim an existing seat by name, or claim a free lobby seat when the name is new. */
+    reclaimOrJoin: function (code, name) {
+      return post('reclaimSeat', { code: code, name: name }).catch(function (e) {
+        if (!isNoSuchPlayer(e)) throw e;
+        return post('lookupGame', { code: code }).then(function (data) {
+          var seated = data && data.players ? data.players.length : 0;
+          var openLobby =
+            data && data.exists && data.status === 'lobby' && seated < Number(data.playerCount);
+          if (!openLobby) throw e;
+          return post('joinGame', { code: code, name: name });
+        });
+      });
+    },
+    cancelGame: function (body) {
+      return post('cancelGame', body);
+    },
     state: function (code, token) {
       return get('state', { code: code, token: token });
     },
@@ -86,6 +110,9 @@
     },
     listGames: function (adminCode) {
       return post('listGames', { adminCode: adminCode });
+    },
+    deleteGame: function (body) {
+      return post('deleteGame', body);
     },
     reorderSeats: function (body) {
       return post('reorderSeats', body);

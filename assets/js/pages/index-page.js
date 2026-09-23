@@ -25,8 +25,12 @@
     var last = window.PlayerStorage ? PlayerStorage.lastName() : '';
     ScrabbleAdmin.openDialog(
       '<h2>New Game</h2>' +
-        '<div class="field"><label for="playerCount">Number of players</label>' +
-        '<select id="playerCount"><option value="2" selected>2</option><option value="3">3</option><option value="4">4</option></select></div>' +
+        '<div class="field"><label id="playerCountLabel">Number of players</label>' +
+        '<div class="count-picker" role="group" aria-labelledby="playerCountLabel">' +
+        '<button type="button" data-count="2" aria-pressed="true">2</button>' +
+        '<button type="button" data-count="3" aria-pressed="false">3</button>' +
+        '<button type="button" data-count="4" aria-pressed="false">4</button>' +
+        '</div></div>' +
         '<div class="field"><label for="hostName">Your name</label>' +
         '<input id="hostName" type="text" maxlength="24" autocomplete="nickname" value="' +
         ScrabbleAdmin.esc(last) +
@@ -38,6 +42,13 @@
         var err = root.querySelector('#newGameError');
         var btn = root.querySelector('#btnCreate');
         var nameEl = root.querySelector('#hostName');
+        root.querySelectorAll('.count-picker button').forEach(function (countBtn) {
+          countBtn.addEventListener('click', function () {
+            root.querySelectorAll('.count-picker button').forEach(function (b) {
+              b.setAttribute('aria-pressed', b === countBtn ? 'true' : 'false');
+            });
+          });
+        });
         btn.addEventListener('click', function () {
           err.classList.add('hidden');
           var name = (nameEl.value || '').trim();
@@ -52,7 +63,8 @@
             return;
           }
           btn.disabled = true;
-          var count = parseInt(root.querySelector('#playerCount').value, 10) || 2;
+          var pressed = root.querySelector('.count-picker button[aria-pressed="true"]');
+          var count = parseInt(pressed && pressed.getAttribute('data-count'), 10) || 2;
           ScrabbleAPI.createGame({
             playerCount: count,
             hostName: name,
@@ -101,7 +113,7 @@
             return;
           }
           btn.disabled = true;
-          ScrabbleAPI.joinGame({ code: code, name: name })
+          ScrabbleAPI.reclaimOrJoin(code, name)
             .then(function (data) {
               var player = data.player;
               PlayerStorage.save(code, player);
@@ -139,29 +151,51 @@
             err.classList.remove('hidden');
             return;
           }
+          btn.disabled = true;
           var saved = PlayerStorage.load(code);
+          function afterLookup(data) {
+            if (!data || !data.exists) {
+              if (saved) PlayerStorage.clear(code);
+              err.textContent = 'No game with that code.';
+              err.classList.remove('hidden');
+              btn.disabled = false;
+              return;
+            }
+            ScrabbleAdmin.closeDialog();
+            askJoinName(code);
+          }
           if (saved && saved.token) {
-            window.location.href = 'game.html?g=' + encodeURIComponent(code);
+            ScrabbleAPI.state(code, saved.token)
+              .then(function () {
+                window.location.href = 'game.html?g=' + encodeURIComponent(code);
+              })
+              .catch(function (e) {
+                if (e.status === 401) {
+                  PlayerStorage.clear(code);
+                  saved = null;
+                  return ScrabbleAPI.lookupGame(code)
+                    .then(afterLookup)
+                    .catch(function (err2) {
+                      err.textContent = err2.message || String(err2);
+                      err.classList.remove('hidden');
+                      btn.disabled = false;
+                    });
+                }
+                if (e.status === 404) {
+                  PlayerStorage.clear(code);
+                  err.textContent = 'No game with that code.';
+                  err.classList.remove('hidden');
+                  btn.disabled = false;
+                  return;
+                }
+                err.textContent = e.message || String(e);
+                err.classList.remove('hidden');
+                btn.disabled = false;
+              });
             return;
           }
-          btn.disabled = true;
           ScrabbleAPI.lookupGame(code)
-            .then(function (data) {
-              if (!data || !data.exists) {
-                err.textContent = 'No game with that code.';
-                err.classList.remove('hidden');
-                btn.disabled = false;
-                return;
-              }
-              if (data.status && data.status !== 'lobby') {
-                err.textContent = 'That game has already started.';
-                err.classList.remove('hidden');
-                btn.disabled = false;
-                return;
-              }
-              ScrabbleAdmin.closeDialog();
-              askJoinName(code);
-            })
+            .then(afterLookup)
             .catch(function (e) {
               err.textContent = e.message || String(e);
               err.classList.remove('hidden');

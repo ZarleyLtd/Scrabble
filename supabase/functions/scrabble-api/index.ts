@@ -1,6 +1,7 @@
 /**
  * Scrabble API — Supabase Edge Function
- * Actions: createGame, joinGame, lookupGame, listGames, state, reorderSeats, startGame,
+ * Actions: createGame, joinGame, reclaimSeat, lookupGame, listGames, deleteGame, state,
+ * reorderSeats, startGame, cancelGame,
  * drawTiles, commitMove, pass, exchange, resign, challenge, endGame, twoLetterWords
  */
 
@@ -65,6 +66,10 @@ function randomCode(len = 6) {
   const bytes = crypto.getRandomValues(new Uint8Array(len));
   for (let i = 0; i < len; i++) s += alphabet[bytes[i] % alphabet.length];
   return s;
+}
+
+function normName(value: unknown) {
+  return String(value || "").trim().toLowerCase();
 }
 
 function randomToken() {
@@ -339,6 +344,10 @@ async function joinGame(_sb: SupabaseClient, body: Record<string, unknown>) {
     }
 
     const players = await reloadPlayers(client, String(game.id));
+    if (players.some((p) => normName(p.name) === normName(name))) {
+      await client.queryArray`ROLLBACK`;
+      return fail("A player with that name is already in this game");
+    }
     if (players.length >= Number(game.player_count)) {
       await client.queryArray`ROLLBACK`;
       return fail("Game is full");
@@ -380,6 +389,64 @@ async function joinGame(_sb: SupabaseClient, body: Record<string, unknown>) {
     return ok({
       ...scoped,
       player: { id: player.id, seat: player.seat, name: player.name, token: player.token },
+    });
+  } catch (e) {
+    try {
+      await client.queryArray`ROLLBACK`;
+    } catch (_) {}
+    return fail(errMsg(e), 500);
+  } finally {
+    await client.end();
+  }
+}
+
+async function reclaimSeat(_sb: SupabaseClient, body: Record<string, unknown>) {
+  const code = String(body.code || "").toUpperCase();
+  const name = String(body.name || "").trim();
+  if (!code || !name) return fail("code and name are required");
+
+  const client = await pgConnect();
+  try {
+    await client.queryArray`BEGIN`;
+    await client.queryArray`SELECT pg_advisory_xact_lock(hashtext(${"scrabble:" + code}))`;
+
+    const game = await reloadGame(client, code);
+    if (!game) {
+      await client.queryArray`ROLLBACK`;
+      return fail("Game not found", 404);
+    }
+
+    const players = await reloadPlayers(client, String(game.id));
+    const wanted = normName(name);
+    const matches = players.filter((p) => normName(p.name) === wanted);
+    if (matches.length === 0) {
+      await client.queryArray`ROLLBACK`;
+      return fail("No player with that name");
+    }
+    if (matches.length > 1) {
+      await client.queryArray`ROLLBACK`;
+      return fail("More than one player has that name");
+    }
+
+    const viewer = matches[0];
+    const token = randomToken();
+    await client.queryArray`
+      UPDATE scrabble.players SET token = ${token} WHERE id = ${viewer.id}::uuid`;
+    viewer.token = token;
+
+    const version = Number(game.version) + 1;
+    await client.queryArray`
+      UPDATE scrabble.games SET version = ${version}, updated_at = now()
+      WHERE id = ${game.id}::uuid`;
+    game.version = version;
+    await persistPulse(client, String(game.id), version, Number(game.current_seat), String(game.status));
+    await client.queryArray`COMMIT`;
+
+    const moves = await reloadMoves(client, String(game.id));
+    const scoped = scopedState(game, players, moves, viewer);
+    return ok({
+      ...scoped,
+      player: { id: viewer.id, seat: viewer.seat, name: viewer.name, token },
     });
   } catch (e) {
     try {
@@ -1077,8 +1144,9 @@ async function reorderSeats(body: Record<string, unknown>) {
       return fail("Seat order is invalid");
     }
 
+    // Park on seats 4–7 so the unique (game_id, seat) constraint is free for 0..n-1.
     await client.queryArray`
-      UPDATE scrabble.players SET seat = seat + 10 WHERE game_id = ${game.id}::uuid`;
+      UPDATE scrabble.players SET seat = seat + 4 WHERE game_id = ${game.id}::uuid`;
     for (let i = 0; i < order.length; i++) {
       await client.queryArray`
         UPDATE scrabble.players SET seat = ${i} WHERE id = ${order[i]}::uuid`;
@@ -1126,6 +1194,33 @@ async function startGame(body: Record<string, unknown>) {
     await persistPulse(client, String(game.id), version, Number(game.current_seat), "active");
     const moves = await reloadMoves(client, String(game.id));
     return ok(scopedState(game, ordered, moves, viewer));
+  });
+}
+
+async function deleteGame(_sb: SupabaseClient, body: Record<string, unknown>) {
+  if (String(body.adminCode || "") !== ADMIN_CODE) return fail("Admin code required", 403);
+  const code = String(body.code || "").toUpperCase();
+  if (!code) return fail("code is required");
+
+  const client = await pgConnect();
+  try {
+    const game = await reloadGame(client, code);
+    if (!game) return fail("Game not found", 404);
+    await client.queryArray`DELETE FROM scrabble.games WHERE id = ${game.id}::uuid`;
+    return ok({ deleted: true });
+  } finally {
+    await client.end();
+  }
+}
+
+async function cancelGame(body: Record<string, unknown>) {
+  const code = String(body.code || "");
+  const token = String(body.token || "");
+  return mutate(code, token, body, async (client, game, _players, viewer) => {
+    if (!viewer.is_host) return fail("Only the host can cancel the game");
+    if (game.status !== "lobby") return fail("Only a game that has not started can be cancelled");
+    await client.queryArray`DELETE FROM scrabble.games WHERE id = ${game.id}::uuid`;
+    return ok({ cancelled: true });
   });
 }
 
@@ -1230,16 +1325,22 @@ async function handle(req: Request) {
         return await createGame(sb, body);
       case "joinGame":
         return await joinGame(sb, body);
+      case "reclaimSeat":
+        return await reclaimSeat(sb, body);
       case "lookupGame":
         return await lookupGame(sb, body);
       case "listGames":
         return await listGames(sb, body);
+      case "deleteGame":
+        return await deleteGame(sb, body);
       case "state":
         return await getState(sb, String(body.code || ""), String(body.token || ""));
       case "reorderSeats":
         return await reorderSeats(body);
       case "startGame":
         return await startGame(body);
+      case "cancelGame":
+        return await cancelGame(body);
       case "drawTiles":
         return await doDrawTiles(body);
       case "commitMove":

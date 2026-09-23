@@ -174,10 +174,10 @@ button.scrabble-title:hover:not(:disabled) {
   z-index: 70;
   top: 4.25rem;
   left: 0.5rem;
-  width: 8.75rem;
+  width: 6rem;
   max-height: min(70vh, 32rem);
   overflow: auto;
-  padding: 0.55rem 0.65rem;
+  padding: 0.5rem 0.35rem;
   background: var(--bg-panel);
   border: 1px solid #475569;
   border-radius: var(--radius);
@@ -243,6 +243,10 @@ button.scrabble-title:hover:not(:disabled) {
   margin-top: 0;
 }
 
+#homePanel .btn-row {
+  margin-top: 0;
+}
+
 .field {
   margin-bottom: 1rem;
 }
@@ -263,6 +267,24 @@ button.scrabble-title:hover:not(:disabled) {
   background: #0f172a;
   color: var(--text);
   font-size: 1rem;
+}
+
+.count-picker {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.count-picker button {
+  min-width: 2.75rem;
+}
+
+.count-picker button[aria-pressed='true'] {
+  background: #0369a1;
+  border-color: #0284c7;
+}
+
+.count-picker button[aria-pressed='true']:hover:not(:disabled) {
+  background: #0284c7;
 }
 
 .btn-row {

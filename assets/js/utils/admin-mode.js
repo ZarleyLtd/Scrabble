@@ -75,18 +75,26 @@
     var last = global.PlayerStorage ? PlayerStorage.lastName() : '';
     openDialog(
       '<h2>Play locally</h2>' +
-        '<div class="field"><label for="localCount">Number of players</label>' +
-        '<select id="localCount"><option value="2" selected>2</option><option value="3">3</option><option value="4">4</option></select></div>' +
+        '<div class="field"><label id="localCountLabel">Number of players</label>' +
+        '<div class="count-picker" role="group" aria-labelledby="localCountLabel">' +
+        '<button type="button" data-count="2" aria-pressed="true">2</button>' +
+        '<button type="button" data-count="3" aria-pressed="false">3</button>' +
+        '<button type="button" data-count="4" aria-pressed="false">4</button>' +
+        '</div></div>' +
         '<div id="localNames"></div>' +
         '<p class="error-banner hidden" id="localSetupError"></p>' +
         '<div class="btn-row"><button type="button" class="primary" id="btnLocalStart">Start</button>' +
         '<button type="button" data-dialog-close>Cancel</button></div>',
       function (root) {
-        var countEl = root.querySelector('#localCount');
         var namesEl = root.querySelector('#localNames');
 
+        function selectedCount() {
+          var pressed = root.querySelector('.count-picker button[aria-pressed="true"]');
+          return parseInt(pressed && pressed.getAttribute('data-count'), 10) || 2;
+        }
+
         function renderNames() {
-          var n = parseInt(countEl.value, 10) || 2;
+          var n = selectedCount();
           var existing = [];
           namesEl.querySelectorAll('input').forEach(function (input) {
             existing.push(input.value);
@@ -108,11 +116,18 @@
           namesEl.innerHTML = html;
         }
 
-        countEl.addEventListener('change', renderNames);
+        root.querySelectorAll('.count-picker button').forEach(function (countBtn) {
+          countBtn.addEventListener('click', function () {
+            root.querySelectorAll('.count-picker button').forEach(function (b) {
+              b.setAttribute('aria-pressed', b === countBtn ? 'true' : 'false');
+            });
+            renderNames();
+          });
+        });
         renderNames();
 
         root.querySelector('#btnLocalStart').addEventListener('click', function () {
-          var n = parseInt(countEl.value, 10) || 2;
+          var n = selectedCount();
           var names = [];
           for (var i = 0; i < n; i++) {
             var input = root.querySelector('#localName' + i);
@@ -199,6 +214,58 @@
     );
   }
 
+  function currentGameCode() {
+    try {
+      var params = new URLSearchParams(global.location.search);
+      if (params.get('local') === '1') return '';
+      return (params.get('g') || params.get('code') || '').toUpperCase();
+    } catch (e) {
+      return '';
+    }
+  }
+
+  function confirmAction(title, message, confirmLabel, onConfirm) {
+    openDialog(
+      '<h2>' +
+        esc(title) +
+        '</h2><p>' +
+        esc(message) +
+        '</p><div class="btn-row"><button type="button" class="danger" id="btnConfirmAction">' +
+        esc(confirmLabel) +
+        '</button><button type="button" data-dialog-close>Go back</button></div>',
+      function (root) {
+        var btn = root.querySelector('#btnConfirmAction');
+        if (!btn) return;
+        btn.addEventListener('click', function () {
+          closeDialog();
+          if (typeof onConfirm === 'function') onConfirm();
+        });
+      }
+    );
+  }
+
+  function deleteCurrentGame(anchorEl) {
+    if (!isUnlocked()) return;
+    var code = currentGameCode();
+    if (!code) {
+      if (global.BriefMessage) BriefMessage.show('No game to delete', anchorEl, { durationMs: 1600 });
+      return;
+    }
+    if (!global.ScrabbleAPI) return;
+    confirmAction('Delete game', 'Delete game ' + code + '? This cannot be undone.', 'Delete game', function () {
+    ScrabbleAPI.deleteGame({ code: code, adminCode: adminCode() })
+      .then(function () {
+        if (global.PlayerStorage) PlayerStorage.clear(code);
+        global.location.href = 'index.html';
+      })
+      .catch(function (e) {
+        if (global.BriefMessage) {
+          BriefMessage.show(e.message || 'Could not delete game', anchorEl, { durationMs: 2000 });
+        }
+      });
+    });
+  }
+
   function promptAdmin(anchorEl) {
     if (isUnlocked()) return;
     openDialog(
@@ -235,6 +302,9 @@
     code: adminCode,
     openLocalSetup: openLocalSetup,
     openGameList: openGameList,
+    gameCode: currentGameCode,
+    confirmAction: confirmAction,
+    deleteCurrentGame: deleteCurrentGame,
     promptAdmin: promptAdmin,
     closeDialog: closeDialog,
     openDialog: openDialog,
