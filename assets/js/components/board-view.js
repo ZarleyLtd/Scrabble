@@ -11,6 +11,10 @@ export function renderBoard(container, opts) {
   var placements = opts.placements || [];
   var selectedBoard = opts.selectedBoard || null;
   var onCellClick = opts.onCellClick;
+  var highlightKeys = {};
+  (opts.highlightCells || []).forEach(function (p) {
+    highlightKeys[p.row + ',' + p.col] = true;
+  });
 
   var placementKeys = {};
   placements.forEach(function (p) {
@@ -35,6 +39,7 @@ export function renderBoard(container, opts) {
 
       if (locked) {
         classes.push('cell--occupied');
+        if (highlightKeys[r + ',' + c]) classes.push('cell--last-play');
         cell.innerHTML =
           '<span class="cell__letter">' +
           locked.letter +

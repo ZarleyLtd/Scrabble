@@ -58,6 +58,28 @@ function brief(msg, el) {
   else alert(msg);
 }
 
+function confirmZeroChallenge(onConfirm) {
+  var overlay = document.createElement('div');
+  overlay.className = 'app-dialog';
+  overlay.innerHTML =
+    '<div class="app-dialog__card"><h2>Confirm challenge</h2>' +
+    '<p>You have no challenges left. If this word is allowed, you forfeit your next turn. If it is not allowed, the play is removed as usual.</p>' +
+    '<div class="btn-row"><button type="button" class="danger" id="btnConfirmChallenge">Confirm challenge</button>' +
+    '<button type="button" id="btnCancelChallenge">Go back</button></div></div>';
+  function close() {
+    if (overlay.parentNode) overlay.parentNode.removeChild(overlay);
+  }
+  overlay.addEventListener('click', function (ev) {
+    if (ev.target === overlay) close();
+  });
+  overlay.querySelector('#btnCancelChallenge').addEventListener('click', close);
+  overlay.querySelector('#btnConfirmChallenge').addEventListener('click', function () {
+    close();
+    onConfirm();
+  });
+  document.body.appendChild(overlay);
+}
+
 export function startLocalGamePage(root) {
   var params = new URLSearchParams(window.location.search);
   var count = parseInt(params.get('players') || '2', 10);
@@ -106,7 +128,7 @@ export function startLocalGamePage(root) {
     );
   }
 
-  function runLocalChallenge(assumeInvalid, anchorEl) {
+  function runLocalChallenge(assumeInvalid, anchorEl, confirmed) {
     if (challengeFxBusy) return;
     var s = game.getState();
     if (s.challengeableMoveIndex == null) return;
@@ -120,8 +142,14 @@ export function startLocalGamePage(root) {
     var current = s.players.find(function (p) {
       return p.seat === s.currentSeat;
     });
-    if (!current || current.resigned || current.seat === move.seat || !(current.challengesLeft > 0)) {
-      brief(current && current.seat === move.seat ? 'Cannot challenge your own move' : 'No challenges left', anchorEl);
+    if (!current || current.resigned || current.seat === move.seat) {
+      brief('Cannot challenge your own move', anchorEl);
+      return;
+    }
+    if (!confirmed && !(current.challengesLeft > 0)) {
+      confirmZeroChallenge(function () {
+        runLocalChallenge(assumeInvalid, anchorEl, true);
+      });
       return;
     }
     var challengerName = current.name;
@@ -319,7 +347,7 @@ export function startLocalGamePage(root) {
     renderRack($('rack'), {
       rack: me ? me.rack : [],
       // Selection highlight only in exchange mode (applied below)
-      selectedIndex: null,
+      selectedIndex: s.exchangeMode ? null : s.selectedRackIndex,
       disabled: s.status !== 'active' || !me || me.resigned,
       onTileClick: function (idx) {
         if (s.exchangeMode) {
@@ -528,8 +556,7 @@ export function startLocalGamePage(root) {
         me &&
         !me.resigned &&
         challengeMove &&
-        me.seat !== challengeMove.seat &&
-        me.challengesLeft > 0;
+        me.seat !== challengeMove.seat;
       menuActions.push({
         label: 'Challenge (invalid)',
         className: 'danger',

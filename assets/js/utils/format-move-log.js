@@ -75,6 +75,10 @@ export function formatMoveLogEntry(m) {
     return row('{resign}', '');
   }
 
+  if (m.type === 'forfeit') {
+    return row('{forfeit}', '');
+  }
+
   if (m.type === 'endgame_adjust') {
     return (
       '<div class="move-log__row">' +

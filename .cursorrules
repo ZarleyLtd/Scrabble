@@ -25,3 +25,8 @@
 
 ## CORS and fetch
 7. Prefer simple requests: GET with no custom headers, or POST with `Content-Type: text/plain;charset=UTF-8` and a JSON string body (matches theConfessional), to avoid unnecessary preflight issues where possible.
+
+## Shared Supabase database (Apps project)
+8. This app shares Supabase project `Apps` (`yzyipxvlsoxfphwobfkb`) with other CursorSites apps; each app has its own schema (`scrabble` here). Migration history is global — **do not** `supabase db push` or repair/revert other apps’ remote migrations.
+9. Schema changes: add a local file via `supabase migration new …`, apply the same SQL with MCP `apply_migration` (schema-qualified), verify with `execute_sql`, commit the file. Edge Functions: `supabase functions deploy scrabble-api --no-verify-jwt`.
+10. Full procedure: `../cursor-sites-shared/supabase/SHARED_DATABASE.md` and `.cursor/rules/supabase-shared-db.mdc`.

@@ -35,6 +35,7 @@ export function createLocalGame(options) {
       rack: [],
       score: 0,
       challengesLeft: challenges,
+      skipNextTurn: false,
       resigned: false
     });
   }
@@ -114,6 +115,21 @@ export function createLocalGame(options) {
     bump();
   }
 
+  function consumeSkips() {
+    var guard = 0;
+    while (guard++ < 8) {
+      var p = currentPlayer();
+      if (!p || !p.skipNextTurn || p.resigned || state.status !== 'active') break;
+      p.skipNextTurn = false;
+      state.consecutivePasses += 1;
+      state.challengeableMoveIndex = null;
+      state.moves.push({ type: 'forfeit', seat: p.seat, name: p.name });
+      state.currentSeat = nextSeat(state.currentSeat);
+      state.turnNumber += 1;
+      finishIfNeeded(null);
+    }
+  }
+
   function advanceTurn() {
     state.placements = [];
     state.selectedRackIndex = null;
@@ -122,6 +138,7 @@ export function createLocalGame(options) {
     state.exchangeSelected = {};
     state.currentSeat = nextSeat(state.currentSeat);
     state.turnNumber += 1;
+    consumeSkips();
   }
 
   function clearSelection() {
@@ -508,11 +525,14 @@ export function createLocalGame(options) {
       var current = currentPlayer();
       if (!current || current.resigned) return { error: 'You have resigned' };
       if (current.seat === move.seat) return { error: 'Cannot challenge your own move' };
-      if (!(current.challengesLeft > 0)) return { error: 'No challenges left' };
       var challenger = current;
 
       if (!assumeInvalid) {
-        challenger.challengesLeft -= 1;
+        if (challenger.challengesLeft > 0) {
+          challenger.challengesLeft -= 1;
+        } else if (state.pendingFinisherSeat == null) {
+          challenger.skipNextTurn = true;
+        }
         move.challengeOutcome = 'failed';
         move.challengedByName = challenger.name;
         state.moves.push({
@@ -526,6 +546,8 @@ export function createLocalGame(options) {
           var finisher = state.pendingFinisherSeat;
           state.pendingFinisherSeat = null;
           finishIfNeeded(finisher);
+        } else if (challenger.skipNextTurn) {
+          consumeSkips();
         }
         bump();
         return {

@@ -61,12 +61,10 @@ export function attachTileInteraction(opts) {
     var c = ctx();
     if (!canPlayBoard(c)) return;
     var aim = boardAimPoint(clientX, clientY);
-    var cell = cellUnder(aim.x, aim.y);
-    if (!cell) return;
     var moving =
       session.kind === 'board' ? { row: session.row, col: session.col } : null;
-    if (moving && cell.row === moving.row && cell.col === moving.col) return;
-    if (!canDropOnBoard(c, cell.row, cell.col, moving)) return;
+    var cell = bestDropCell(aim.x, aim.y, moving);
+    if (!cell) return;
     cell.el.classList.add('cell--drop-target');
   }
 
@@ -154,16 +152,101 @@ export function attachTileInteraction(opts) {
     return tiles.length;
   }
 
-  function cellUnder(clientX, clientY) {
-    var el = document.elementFromPoint(clientX, clientY);
-    if (!el) return null;
-    var cell = el.closest ? el.closest('.cell') : null;
-    if (!cell || !boardEl.contains(cell)) return null;
+  function cellInfo(cell) {
     return {
       row: parseInt(cell.dataset.row, 10),
       col: parseInt(cell.dataset.col, 10),
       el: cell
     };
+  }
+
+  function cellUnder(clientX, clientY) {
+    var el = document.elementFromPoint(clientX, clientY);
+    if (!el) return null;
+    var cell = el.closest ? el.closest('.cell') : null;
+    if (!cell || !boardEl.contains(cell)) return null;
+    return cellInfo(cell);
+  }
+
+  function outsideBoard(clientX, clientY) {
+    var r = boardEl.getBoundingClientRect();
+    return clientX < r.left || clientX > r.right || clientY < r.top || clientY > r.bottom;
+  }
+
+  /** Square under the aim point, including the gap between cells, while still on the board. */
+  function pointedCell(clientX, clientY) {
+    var boardRect = boardEl.getBoundingClientRect();
+    if (
+      clientX < boardRect.left ||
+      clientX > boardRect.right ||
+      clientY < boardRect.top ||
+      clientY > boardRect.bottom
+    ) {
+      return null;
+    }
+    var direct = cellUnder(clientX, clientY);
+    if (direct) return direct;
+    var cells = boardEl.querySelectorAll('.cell');
+    var best = null;
+    var bestDist = Infinity;
+    for (var i = 0; i < cells.length; i++) {
+      var rect = cells[i].getBoundingClientRect();
+      var cx = rect.left + rect.width / 2;
+      var cy = rect.top + rect.height / 2;
+      var dist = (cx - clientX) * (cx - clientX) + (cy - clientY) * (cy - clientY);
+      if (dist < bestDist) {
+        bestDist = dist;
+        best = cells[i];
+      }
+    }
+    return best ? cellInfo(best) : null;
+  }
+
+  /**
+   * Legal square under the aim point, or the closest legal square among the eight around it.
+   */
+  function bestDropCell(clientX, clientY, moving) {
+    var pointed = pointedCell(clientX, clientY);
+    if (!pointed) return null;
+    var c = ctx();
+    var best = null;
+    var bestDist = Infinity;
+    for (var dr = -1; dr <= 1; dr++) {
+      for (var dc = -1; dc <= 1; dc++) {
+        var row = pointed.row + dr;
+        var col = pointed.col + dc;
+        if (row < 0 || col < 0 || row > 14 || col > 14) continue;
+        if (moving && row === moving.row && col === moving.col) continue;
+        if (!canDropOnBoard(c, row, col, moving)) continue;
+        var el = boardEl.querySelector(
+          '.cell[data-row="' + row + '"][data-col="' + col + '"]'
+        );
+        if (!el) continue;
+        var rect = el.getBoundingClientRect();
+        var cx = rect.left + rect.width / 2;
+        var cy = rect.top + rect.height / 2;
+        var dist = (cx - clientX) * (cx - clientX) + (cy - clientY) * (cy - clientY);
+        if (dist < bestDist) {
+          bestDist = dist;
+          best = { row: row, col: col, el: el };
+        }
+      }
+    }
+    return best;
+  }
+
+  /** Insert slot from horizontal position, even when the pointer is above the rack. */
+  function rackInsertIndexByX(clientX) {
+    var tiles = Array.prototype.slice.call(rackEl.querySelectorAll('.tile:not(.tile--ghost)'));
+    if (!tiles.length) return 0;
+    var rackRect = rackEl.getBoundingClientRect();
+    if (clientX < rackRect.left - 24 || clientX > rackRect.right + 24) return -1;
+    for (var i = 0; i < tiles.length; i++) {
+      var r = tiles[i].getBoundingClientRect();
+      var mid = r.left + r.width / 2;
+      if (clientX < mid) return i;
+    }
+    return tiles.length;
   }
 
   function overRack(clientX, clientY) {
@@ -409,12 +492,12 @@ export function attachTileInteraction(opts) {
         return;
       }
 
-      var cell = cellUnder(boardAim.x, boardAim.y);
+      var cell = bestDropCell(boardAim.x, boardAim.y, null);
       if (!canPlayBoard(c)) {
         if (cell) notifyNotYourTurn(c, cell.el || boardEl);
         return;
       }
-      if (cell && canDropOnBoard(c, cell.row, cell.col, null)) {
+      if (cell) {
         if (typeof c.onPlaceFromRack === 'function') {
           var placed = c.onPlaceFromRack(cell.row, cell.col, snap.index);
           if (placed && placed.needBlank) return;
@@ -427,8 +510,9 @@ export function attachTileInteraction(opts) {
     if (!canPlayBoard(c)) return;
 
     if (snap.kind === 'board') {
-      if (overRack(x, y)) {
+      if (overRack(x, y) || outsideBoard(boardAim.x, boardAim.y)) {
         var insertAt = rackInsertIndex(x, y);
+        if (insertAt < 0) insertAt = rackInsertIndexByX(x);
         if (insertAt < 0) insertAt = (c.rack && c.rack.length) || 0;
         if (typeof c.onReturnToRack === 'function') {
           var ret = c.onReturnToRack(snap.row, snap.col, insertAt);
@@ -437,7 +521,7 @@ export function attachTileInteraction(opts) {
         return;
       }
 
-      var dest = cellUnder(boardAim.x, boardAim.y);
+      var dest = bestDropCell(boardAim.x, boardAim.y, { row: snap.row, col: snap.col });
       if (
         dest &&
         (dest.row !== snap.row || dest.col !== snap.col) &&

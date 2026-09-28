@@ -17,5 +17,10 @@ var SCRABBLE_CONFIG = {
   MIN_PLAYERS: 2,
   MAX_PLAYERS: 4,
   RACK_SIZE: 7,
-  HEARTBEAT_MS: 45000
+  /** Unused by the disconnected poll. Kept so older notes still name it. */
+  HEARTBEAT_MS: 45000,
+  /** While the tab is visible and Realtime is down, refresh on this interval. */
+  POLL_DISCONNECTED_MS: 8000,
+  /** Stop that poll after this long until wake, pageshow, or a rack reorder. */
+  POLL_DISCONNECTED_MAX_MS: 120000
 };

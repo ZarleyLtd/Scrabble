@@ -125,7 +125,7 @@ Validates placement, scores, advances turn, sets `challengeableMoveId`.
 ```
 
 Only while `challengeableMoveId` is set and challenger is not the mover.  
-Success (invalid words): revert move and clear a pending finish. Failure: decrement `challengesLeft`. A failed challenge on the final word ends the game.
+Success (invalid words): revert move and clear a pending finish. Failure with challenges remaining: decrement `challengesLeft`. Failure at zero: do not go below zero; that player forfeits their next turn (a `forfeit` move, counted like a pass). If it is already their turn, the skip happens in the same request and the challenge window closes. Otherwise the window stays open until the turn would land on them. A failed challenge on the final word ends the game and does not forfeit a turn.
 
 ### twoLetterWords (POST)
 
@@ -134,4 +134,5 @@ Success (invalid words): revert move and clear a pending finish. Failure: decrem
 ## Realtime
 
 Table `scrabble.game_pulse`: `{ game_id, version, current_seat, status, updated_at }`  
-Clients subscribe with filter `game_id=eq.<uuid>`, then call `state` if `version` > local.
+Clients subscribe with filter `game_id=eq.<uuid>`, then call `state` if `version` > local.  
+Hiding the tab unsubscribes. Showing it, or `pageshow`, rejoins and refreshes. While the tab is visible and the channel is not `SUBSCRIBED`, the client refreshes immediately and then every 8 seconds for at most 2 minutes. Wake, `pageshow`, and a rack reorder start that window again. There is no slower poll after it ends.

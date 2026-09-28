@@ -1,0 +1,24 @@
+---
+description: How to apply Supabase schema changes on the shared CursorSites Apps database
+globs: supabase/**/*
+alwaysApply: false
+---
+
+# Shared Supabase database
+
+This app shares Supabase project **Apps** (`yzyipxvlsoxfphwobfkb`) with other CursorSites apps. Each app uses its own schema (`scrabble` here). The migration history table is global.
+
+## Schema changes
+
+1. Write SQL that only touches the `scrabble` schema.
+2. `supabase migration new <snake_name>` and put the SQL in the new file under `supabase/migrations/`.
+3. Apply with MCP **`apply_migration`** on project `yzyipxvlsoxfphwobfkb` (same SQL). Do **not** run `supabase db push` — remote history includes other apps’ migrations that are not in this repo.
+4. Verify with **`execute_sql`**. Commit the local migration file.
+
+Never repair/revert other apps’ remote migration versions to unblock push.
+
+## Edge Functions
+
+`supabase functions deploy scrabble-api --no-verify-jwt` is independent of migration history.
+
+Canonical write-up: `../cursor-sites-shared/supabase/SHARED_DATABASE.md`

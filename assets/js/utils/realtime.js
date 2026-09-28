@@ -8,6 +8,26 @@
   var client = null;
   var heartbeatTimer = null;
   var connected = false;
+  var pollExhausted = false;
+  var pollStartedAt = 0;
+  var savedGameId = null;
+  var savedOnPulse = null;
+  var savedOnDisconnect = null;
+  var subEpoch = 0;
+
+  function pollIntervalMs() {
+    var cfg = global.SCRABBLE_CONFIG || {};
+    return cfg.POLL_DISCONNECTED_MS || 8000;
+  }
+
+  function pollMaxMs() {
+    var cfg = global.SCRABBLE_CONFIG || {};
+    return cfg.POLL_DISCONNECTED_MAX_MS || 120000;
+  }
+
+  function pageVisible() {
+    return !global.document || global.document.visibilityState !== 'hidden';
+  }
 
   function getClient() {
     var cfg = global.SCRABBLE_CONFIG || {};
@@ -22,13 +42,25 @@
     return client;
   }
 
+  function detachChannel() {
+    if (channel && client) {
+      client.removeChannel(channel);
+    }
+    channel = null;
+    connected = false;
+  }
+
   /**
    * Subscribe to pulse updates for a game.
    * onPulse({ version, current_seat, status })
    * onDisconnectChange(boolean connected)
    */
   function subscribe(gameId, onPulse, onDisconnectChange) {
-    unsubscribe();
+    savedGameId = gameId;
+    savedOnPulse = onPulse;
+    savedOnDisconnect = onDisconnectChange;
+    var epoch = ++subEpoch;
+    detachChannel();
     var sb = getClient();
     if (!sb) {
       if (typeof onDisconnectChange === 'function') onDisconnectChange(false);
@@ -46,33 +78,57 @@
           filter: 'game_id=eq.' + gameId
         },
         function (payload) {
+          if (epoch !== subEpoch) return;
           var row = payload.new || payload.old || {};
-          if (typeof onPulse === 'function') onPulse(row, payload.eventType);
+          if (typeof savedOnPulse === 'function') savedOnPulse(row, payload.eventType);
         }
       )
       .subscribe(function (status) {
+        if (epoch !== subEpoch) return;
         connected = status === 'SUBSCRIBED';
-        if (typeof onDisconnectChange === 'function') onDisconnectChange(connected);
+        if (connected) pollExhausted = false;
+        if (typeof savedOnDisconnect === 'function') savedOnDisconnect(connected);
       });
 
     return { ok: true };
   }
 
+  function rejoin() {
+    if (!savedGameId) return { ok: false, error: 'No game to rejoin' };
+    return subscribe(savedGameId, savedOnPulse, savedOnDisconnect);
+  }
+
   function unsubscribe() {
     stopHeartbeat();
-    if (channel && client) {
-      client.removeChannel(channel);
-    }
-    channel = null;
-    connected = false;
+    detachChannel();
+  }
+
+  function armHeartbeat(fn, ms, immediate) {
+    pollStartedAt = Date.now();
+    var interval = ms || pollIntervalMs();
+    var max = pollMaxMs();
+    if (immediate && !connected && pageVisible() && typeof fn === 'function') fn();
+    heartbeatTimer = setInterval(function () {
+      if (Date.now() - pollStartedAt >= max) {
+        pollExhausted = true;
+        stopHeartbeat();
+        return;
+      }
+      if (!connected && pageVisible() && typeof fn === 'function') fn();
+    }, interval);
   }
 
   function startHeartbeat(fn, ms) {
+    if (heartbeatTimer || pollExhausted) return;
+    if (!pageVisible()) return;
+    armHeartbeat(fn, ms, true);
+  }
+
+  function restartHeartbeat(fn, ms) {
+    pollExhausted = false;
     stopHeartbeat();
-    var interval = ms || (global.SCRABBLE_CONFIG && SCRABBLE_CONFIG.HEARTBEAT_MS) || 45000;
-    heartbeatTimer = setInterval(function () {
-      if (!connected && typeof fn === 'function') fn();
-    }, interval);
+    if (!pageVisible() || connected) return;
+    armHeartbeat(fn, ms, true);
   }
 
   function stopHeartbeat() {
@@ -88,8 +144,10 @@
 
   global.ScrabbleRealtime = {
     subscribe: subscribe,
+    rejoin: rejoin,
     unsubscribe: unsubscribe,
     startHeartbeat: startHeartbeat,
+    restartHeartbeat: restartHeartbeat,
     stopHeartbeat: stopHeartbeat,
     isConnected: isConnected
   };

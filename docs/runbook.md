@@ -7,12 +7,13 @@
 
 ## Database
 
-```bash
-cd C:\CursorSites\Scrabble
-supabase db push
-```
+This app shares the CursorSites **Apps** Supabase project with other apps (separate schemas; global migration history). Prefer the shared procedure in `../cursor-sites-shared/supabase/SHARED_DATABASE.md`:
 
-Or apply `supabase/migrations/20260905140000_scrabble_schema.sql` in the SQL editor.
+1. `supabase migration new <snake_name>` and edit the new file under `supabase/migrations/` (SQL must stay in schema `scrabble`).
+2. Apply with the Supabase MCP `apply_migration` tool (or the SQL editor) — **not** `supabase db push`.
+3. Commit the local migration file.
+
+`supabase db push` fails when remote history includes other apps’ migrations that are not in this repo. Do not repair those versions as reverted.
 
 ## Dictionary (challenges)
 
@@ -35,7 +36,7 @@ supabase functions deploy scrabble-api --no-verify-jwt
 Confirm `assets/js/config/app-config.js`:
 
 - `API_URL` → `https://yzyipxvlsoxfphwobfkb.supabase.co/functions/v1/scrabble-api`
-- `SUPABASE_ANON_KEY` → project anon/public key from Dashboard → Settings → API (Realtime only; optional — without it, the 45s heartbeat still refreshes)
+- `SUPABASE_ANON_KEY` → project anon/public key from Dashboard → Settings → API (Realtime only; optional — without it, a visible tab refreshes every 8 seconds for up to 2 minutes, and again after the tab wakes)
 
 Edge Function secrets (shared with other apps on this project): `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `SUPABASE_DB_URL`.
 

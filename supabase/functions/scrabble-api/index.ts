@@ -163,6 +163,34 @@ async function reloadMoves(client: Client, gameId: string) {
   return r.rows;
 }
 
+/** Skip players marked skip_next_turn. Each skip is a forfeit and counts as a pass. */
+async function consumeSkips(
+  client: Client,
+  game: Record<string, unknown>,
+  players: Array<Record<string, unknown>>,
+  seat: number,
+): Promise<number> {
+  let current = seat;
+  for (let n = 0; n < 8; n++) {
+    const p = players.find((x) => Number(x.seat) === current);
+    if (!p || !p.skip_next_turn || p.resigned) break;
+    p.skip_next_turn = false;
+    await client.queryArray`
+      UPDATE scrabble.players SET skip_next_turn = false WHERE id = ${p.id}::uuid`;
+    await client.queryArray`
+      INSERT INTO scrabble.moves (game_id, seat, type)
+      VALUES (${game.id}::uuid, ${current}, 'forfeit')`;
+    game.consecutive_passes = Number(game.consecutive_passes) + 1;
+    game.turn_number = Number(game.turn_number) + 1;
+    game.challengeable_move_id = null;
+    current = nextSeat(
+      players.map((x) => ({ seat: Number(x.seat), resigned: !!x.resigned })),
+      current,
+    );
+  }
+  return current;
+}
+
 function nextSeat(players: Array<{ seat: number; resigned: boolean }>, from: number) {
   const n = Math.max(...players.map((p) => p.seat)) + 1;
   let seat = from;
@@ -203,6 +231,7 @@ function scopedState(
         name: p.name,
         score: p.score,
         challengesLeft: p.challenges_left,
+        skipNextTurn: !!p.skip_next_turn,
         resigned: p.resigned,
         isHost: p.is_host,
         rackCount: String(p.rack || "").length,
@@ -728,41 +757,42 @@ async function doCommitMove(body: Record<string, unknown>) {
     const version = Number(game.version) + 1;
     const emptied = String(viewer.rack || "").length === 0;
     const pendingSeat = emptied ? Number(viewer.seat) : null;
-    // Don't advance yet — set challengeable first then advance
     const next = nextSeat(
       players.map((p) => ({ seat: Number(p.seat), resigned: !!p.resigned })),
       Number(game.current_seat),
     );
+    game.consecutive_passes = 0;
+    game.turn_number = Number(game.turn_number) + 1;
+    game.challengeable_move_id = moveId;
+    const settled = await consumeSkips(client, game, players, next);
 
     await client.queryArray`
       UPDATE scrabble.games SET
         board = ${JSON.stringify(newBoard)}::jsonb,
         bag = ${game.bag},
-        consecutive_passes = 0,
-        challengeable_move_id = ${moveId}::uuid,
+        consecutive_passes = ${Number(game.consecutive_passes)},
+        challengeable_move_id = ${game.challengeable_move_id}::uuid,
         pending_finisher_seat = ${pendingSeat},
-        current_seat = ${next},
-        turn_number = ${Number(game.turn_number) + 1},
+        current_seat = ${settled},
+        turn_number = ${Number(game.turn_number)},
         version = ${version},
         updated_at = now()
       WHERE id = ${game.id}::uuid`;
 
-    game.challengeable_move_id = moveId;
     game.pending_finisher_seat = pendingSeat;
-    game.current_seat = next;
-    game.turn_number = Number(game.turn_number) + 1;
+    game.current_seat = settled;
     game.version = version;
 
     let resultGame = game;
     let resultPlayers = players;
     if (emptied) {
-      await persistPulse(client, String(game.id), version, next, String(game.status));
+      await persistPulse(client, String(game.id), version, settled, String(game.status));
     } else {
       const end = await maybeEndGame(client, game, players, null);
       resultGame = end.game;
       resultPlayers = end.players;
       if (!end.ended) {
-        await persistPulse(client, String(game.id), version, next, String(game.status));
+        await persistPulse(client, String(game.id), version, settled, String(game.status));
       }
     }
 
@@ -801,22 +831,24 @@ async function doPass(body: Record<string, unknown>) {
       Number(game.current_seat),
     );
     const version = Number(game.version) + 1;
+    game.turn_number = Number(game.turn_number) + 1;
+    game.challengeable_move_id = null;
+    const settled = await consumeSkips(client, game, players, next);
     await client.queryArray`
       UPDATE scrabble.games SET
-        consecutive_passes = ${game.consecutive_passes},
+        consecutive_passes = ${Number(game.consecutive_passes)},
         challengeable_move_id = null,
-        current_seat = ${next},
-        turn_number = ${Number(game.turn_number) + 1},
+        current_seat = ${settled},
+        turn_number = ${Number(game.turn_number)},
         version = ${version},
         updated_at = now()
       WHERE id = ${game.id}::uuid`;
-    game.current_seat = next;
-    game.turn_number = Number(game.turn_number) + 1;
+    game.current_seat = settled;
     game.version = version;
 
     const end = await maybeEndGame(client, game, players, null);
     if (!end.ended) {
-      await persistPulse(client, String(game.id), version, next, String(game.status));
+      await persistPulse(client, String(game.id), version, settled, String(game.status));
     }
 
     const moves = (
@@ -857,20 +889,23 @@ async function doExchange(body: Record<string, unknown>) {
       Number(game.current_seat),
     );
     const version = Number(game.version) + 1;
+    game.turn_number = Number(game.turn_number) + 1;
+    game.challengeable_move_id = null;
+    const settled = await consumeSkips(client, game, players, next);
     await client.queryArray`
       UPDATE scrabble.games SET
         bag = ${game.bag},
-        challengeable_move_id = null,
-        current_seat = ${next},
-        turn_number = ${Number(game.turn_number) + 1},
+        consecutive_passes = ${Number(game.consecutive_passes)},
+        challengeable_move_id = ${game.challengeable_move_id}::uuid,
+        current_seat = ${settled},
+        turn_number = ${Number(game.turn_number)},
         version = ${version},
         updated_at = now()
       WHERE id = ${game.id}::uuid`;
-    game.current_seat = next;
-    game.turn_number = Number(game.turn_number) + 1;
+    game.current_seat = settled;
     game.version = version;
 
-    await persistPulse(client, String(game.id), version, next, String(game.status));
+    await persistPulse(client, String(game.id), version, settled, String(game.status));
     const moves = (
       await client.queryObject<Record<string, unknown>>`
         SELECT * FROM scrabble.moves WHERE game_id = ${game.id}::uuid ORDER BY created_at`
@@ -901,10 +936,14 @@ async function doResign(body: Record<string, unknown>) {
         players.map((p) => ({ seat: Number(p.seat), resigned: !!p.resigned })),
         seat,
       );
+      game.challengeable_move_id = null;
+      seat = await consumeSkips(client, game, players, seat);
     }
     await client.queryArray`
       UPDATE scrabble.games SET
         challengeable_move_id = null,
+        consecutive_passes = ${Number(game.consecutive_passes)},
+        turn_number = ${Number(game.turn_number)},
         current_seat = ${seat},
         version = ${version},
         updated_at = now()
@@ -931,7 +970,6 @@ async function doChallenge(sb: SupabaseClient, body: Record<string, unknown>) {
   return mutate(code, token, body, async (client, game, players, viewer) => {
     if (!game.challengeable_move_id) return fail("Nothing to challenge");
     if (viewer.resigned) return fail("You have resigned");
-    if (Number(viewer.challenges_left) <= 0) return fail("No challenges left");
 
     const moveR = await client.queryObject<Record<string, unknown>>`
       SELECT * FROM scrabble.moves WHERE id = ${game.challengeable_move_id}::uuid LIMIT 1`;
@@ -1028,11 +1066,18 @@ async function doChallenge(sb: SupabaseClient, body: Record<string, unknown>) {
       return ok({ ...scopedState(game, players, moves, viewer), outcome: "success" });
     }
 
-    // Failed challenge — play stands; annotate words as valid; window stays open
-    viewer.challenges_left = Number(viewer.challenges_left) - 1;
-    await client.queryArray`
-      UPDATE scrabble.players SET challenges_left = ${viewer.challenges_left}
-      WHERE id = ${viewer.id}::uuid`;
+    // Failed challenge — play stands. With challenges left, spend one.
+    // At zero, forfeit the challenger's next turn instead of going negative.
+    if (Number(viewer.challenges_left) > 0) {
+      viewer.challenges_left = Number(viewer.challenges_left) - 1;
+      await client.queryArray`
+        UPDATE scrabble.players SET challenges_left = ${viewer.challenges_left}
+        WHERE id = ${viewer.id}::uuid`;
+    } else if (game.pending_finisher_seat == null) {
+      viewer.skip_next_turn = true;
+      await client.queryArray`
+        UPDATE scrabble.players SET skip_next_turn = true WHERE id = ${viewer.id}::uuid`;
+    }
     await client.queryArray`
       UPDATE scrabble.moves SET
         challenge_outcome = 'failed',
@@ -1042,10 +1087,20 @@ async function doChallenge(sb: SupabaseClient, body: Record<string, unknown>) {
     await client.queryArray`
       INSERT INTO scrabble.moves (game_id, seat, type, challenged_by, challenge_outcome)
       VALUES (${game.id}::uuid, ${viewer.seat}, 'challenge', ${viewer.id}::uuid, 'failed')`;
-    await client.queryArray`
-      UPDATE scrabble.games SET version = ${version}, updated_at = now()
-      WHERE id = ${game.id}::uuid`;
     game.version = version;
+    if (viewer.skip_next_turn && Number(game.current_seat) === Number(viewer.seat)) {
+      const settled = await consumeSkips(client, game, players, Number(viewer.seat));
+      game.current_seat = settled;
+    }
+    await client.queryArray`
+      UPDATE scrabble.games SET
+        version = ${version},
+        current_seat = ${Number(game.current_seat)},
+        turn_number = ${Number(game.turn_number)},
+        consecutive_passes = ${Number(game.consecutive_passes)},
+        challengeable_move_id = ${game.challengeable_move_id}::uuid,
+        updated_at = now()
+      WHERE id = ${game.id}::uuid`;
     if (game.pending_finisher_seat != null) {
       const end = await maybeEndGame(
         client,
