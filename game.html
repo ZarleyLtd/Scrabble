@@ -9,8 +9,14 @@
 <body>
   <header class="app-header">
     <h1><button type="button" id="scrabbleTitle" class="scrabble-title">Scrabble</button></h1>
-    <p class="app-header__status" id="headerStatus" aria-live="polite"></p>
-    <span class="muted app-header__meta" id="headerMeta"></span>
+    <div class="app-header__center">
+      <p class="app-header__status" id="headerStatus" aria-live="polite"></p>
+      <div id="headerTurnClock" class="header-clock header-clock--turn hidden" aria-live="off"></div>
+    </div>
+    <div class="app-header__end">
+      <span class="muted app-header__meta" id="headerMeta"></span>
+      <div id="headerGameClock" class="header-clock header-clock--game hidden" aria-live="off"></div>
+    </div>
   </header>
 
   <div id="joinPanel" class="panel hidden"></div>
@@ -22,6 +28,7 @@
   <script src="assets/js/utils/brief-message.js"></script>
   <script src="assets/js/utils/api.js"></script>
   <script src="assets/js/utils/player-storage.js"></script>
+  <script src="assets/js/utils/timer-picker.js"></script>
   <script src="assets/js/utils/admin-mode.js"></script>
   <script src="assets/js/utils/header-menu.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.49.1/dist/umd/supabase.min.js"></script>

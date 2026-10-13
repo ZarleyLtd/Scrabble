@@ -49,8 +49,8 @@ a {
 .app-header {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
-  align-items: center;
-  gap: 0.75rem 1rem;
+  align-items: start;
+  gap: 0.35rem 1rem;
   padding: 0.75rem 1rem;
   background: var(--bg-panel);
   border-bottom: 1px solid #334155;
@@ -127,9 +127,9 @@ button.scrabble-title:hover:not(:disabled) {
   background: var(--bg-panel);
   border-radius: var(--radius);
   padding: 1.25rem;
-  max-width: 28rem;
+  max-width: 36rem;
   width: 100%;
-  max-height: min(80vh, 36rem);
+  max-height: min(80vh, 42rem);
   overflow: auto;
   border: 1px solid #475569;
 }
@@ -208,14 +208,22 @@ button.scrabble-title:hover:not(:disabled) {
   color: var(--text);
 }
 
+.app-header__center {
+  justify-self: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  min-width: 0;
+  max-width: min(22rem, 48vw);
+}
+
 .app-header__status {
   margin: 0;
-  justify-self: center;
   text-align: center;
   font-size: 0.95rem;
   font-weight: 600;
   color: var(--text);
-  max-width: min(22rem, 48vw);
+  max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -225,9 +233,43 @@ button.scrabble-title:hover:not(:disabled) {
   color: var(--accent-2);
 }
 
-.app-header__meta {
+.app-header__end {
   justify-self: end;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 0.1rem;
+  min-width: 0;
+}
+
+.app-header__meta {
   text-align: right;
+  white-space: nowrap;
+}
+
+.header-clock {
+  margin: 0;
+  padding: 0.05rem 0.35rem;
+  border-radius: 0.35rem;
+  font-size: 0.9rem;
+  font-weight: 700;
+  line-height: 1.2;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+
+.header-clock--turn {
+  text-align: center;
+}
+
+.header-clock--game {
+  text-align: right;
+}
+
+.header-clock--warn {
+  background: rgba(185, 28, 28, 0.4);
+  box-shadow: 0 0 0 1px #ef4444;
+  color: #fecaca;
 }
 
 .panel {
@@ -285,6 +327,35 @@ button.scrabble-title:hover:not(:disabled) {
 
 .count-picker button[aria-pressed='true']:hover:not(:disabled) {
   background: #0284c7;
+}
+
+.setup-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem 1.25rem;
+}
+
+.setup-row > .field {
+  flex: 1 1 10rem;
+  min-width: 0;
+}
+
+.timer-picker {
+  flex-wrap: wrap;
+}
+
+.timer-picker button {
+  min-width: 0;
+}
+
+.timer-custom {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.75rem;
+}
+
+.timer-custom.hidden {
+  display: none;
 }
 
 .btn-row {
@@ -690,7 +761,7 @@ button.success {
   display: flex;
   justify-content: space-between;
   gap: 0.5rem;
-  padding: 0.35rem 0;
+  padding: 0.35rem 1.5rem 0.35rem 0;
   border-bottom: 1px solid #334155;
   font-size: 0.9rem;
 }
@@ -830,7 +901,9 @@ button.success {
 
 .move-log {
   max-height: 180px;
-  overflow: auto;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding-right: 0.35rem;
   font-size: 0.8rem;
   color: var(--muted);
 }
@@ -840,8 +913,9 @@ button.success {
   grid-template-columns: 5.5rem minmax(0, 1fr) 2.5rem;
   gap: 0.15rem 0.45rem;
   align-items: baseline;
-  padding: 0.25rem 0;
+  padding: 0.25rem 0.65rem 0.25rem 0;
   border-bottom: 1px solid #1e293b;
+  box-sizing: border-box;
 }
 
 .move-log__name {

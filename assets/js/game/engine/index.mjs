@@ -8,3 +8,4 @@ export * from './placement.mjs';
 export * from './words.mjs';
 export * from './scoring.mjs';
 export * from './endgame.mjs';
+export * from './timer.mjs';

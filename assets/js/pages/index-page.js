@@ -25,12 +25,15 @@
     var last = window.PlayerStorage ? PlayerStorage.lastName() : '';
     ScrabbleAdmin.openDialog(
       '<h2>New Game</h2>' +
+        '<div class="setup-row">' +
         '<div class="field"><label id="playerCountLabel">Number of players</label>' +
         '<div class="count-picker" role="group" aria-labelledby="playerCountLabel">' +
         '<button type="button" data-count="2" aria-pressed="true">2</button>' +
         '<button type="button" data-count="3" aria-pressed="false">3</button>' +
         '<button type="button" data-count="4" aria-pressed="false">4</button>' +
         '</div></div>' +
+        (window.ScrabbleTimerPicker ? ScrabbleTimerPicker.fieldsHtml() : '') +
+        '</div>' +
         '<div class="field"><label for="hostName">Your name</label>' +
         '<input id="hostName" type="text" maxlength="24" autocomplete="nickname" value="' +
         ScrabbleAdmin.esc(last) +
@@ -42,9 +45,10 @@
         var err = root.querySelector('#newGameError');
         var btn = root.querySelector('#btnCreate');
         var nameEl = root.querySelector('#hostName');
-        root.querySelectorAll('.count-picker button').forEach(function (countBtn) {
+        var timerPicker = window.ScrabbleTimerPicker ? ScrabbleTimerPicker.bind(root) : null;
+        root.querySelectorAll('.count-picker:not(.timer-picker) button').forEach(function (countBtn) {
           countBtn.addEventListener('click', function () {
-            root.querySelectorAll('.count-picker button').forEach(function (b) {
+            root.querySelectorAll('.count-picker:not(.timer-picker) button').forEach(function (b) {
               b.setAttribute('aria-pressed', b === countBtn ? 'true' : 'false');
             });
           });
@@ -63,14 +67,19 @@
             return;
           }
           btn.disabled = true;
-          var pressed = root.querySelector('.count-picker button[aria-pressed="true"]');
+          var pressed = root.querySelector('.count-picker:not(.timer-picker) button[aria-pressed="true"]');
           var count = parseInt(pressed && pressed.getAttribute('data-count'), 10) || 2;
+          var limits = timerPicker
+            ? timerPicker.getLimits()
+            : { turnLimitMinutes: 0, gameLimitMinutes: 0 };
           ScrabbleAPI.createGame({
             playerCount: count,
             hostName: name,
             settings: {
               challengesPerPlayer: (SCRABBLE_CONFIG && SCRABBLE_CONFIG.DEFAULT_CHALLENGES) || 2,
-              consecutivePassesToEnd: 1
+              consecutivePassesToEnd: 1,
+              turnLimitMinutes: limits.turnLimitMinutes,
+              gameLimitMinutes: limits.gameLimitMinutes
             }
           })
             .then(function (data) {

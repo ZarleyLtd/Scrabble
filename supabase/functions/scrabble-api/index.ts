@@ -2,7 +2,7 @@
  * Scrabble API — Supabase Edge Function
  * Actions: createGame, joinGame, reclaimSeat, lookupGame, listGames, deleteGame, state,
  * reorderSeats, startGame, cancelGame,
- * drawTiles, commitMove, pass, exchange, resign, challenge, endGame, twoLetterWords
+ * drawTiles, commitMove, pass, exchange, resign, challenge, endGame, expireTimers, twoLetterWords
  */
 
 import { createClient, SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2.49.1";
@@ -19,6 +19,9 @@ import {
   scoreTurn,
   applyEndgameAdjustment,
   shouldEndGame,
+  normalizeTimerLimits,
+  computeTimerDeadlines,
+  expiredTimerKind,
 } from "../_shared/engine/index.mjs";
 
 const SCHEMA = "scrabble";
@@ -191,6 +194,29 @@ async function consumeSkips(
   return current;
 }
 
+function parseGameSettings(game: Record<string, unknown>) {
+  let raw: unknown = game.settings;
+  if (typeof raw === "string") {
+    try {
+      raw = JSON.parse(raw);
+    } catch {
+      raw = {};
+    }
+  }
+  const obj = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
+  const limits = normalizeTimerLimits(obj);
+  const challenges =
+    Number(obj.challengesPerPlayer) >= 0 ? Number(obj.challengesPerPlayer) : 2;
+  const consecutivePassesToEnd =
+    Number(obj.consecutivePassesToEnd) >= 1 ? Number(obj.consecutivePassesToEnd) : 1;
+  return {
+    challengesPerPlayer: challenges,
+    consecutivePassesToEnd,
+    turnLimitMinutes: limits.turnLimitMinutes,
+    gameLimitMinutes: limits.gameLimitMinutes,
+  };
+}
+
 function nextSeat(players: Array<{ seat: number; resigned: boolean }>, from: number) {
   const n = Math.max(...players.map((p) => p.seat)) + 1;
   let seat = from;
@@ -208,6 +234,17 @@ function scopedState(
   moves: Array<Record<string, unknown>>,
   viewer: Record<string, unknown> | null,
 ) {
+  const settings = parseGameSettings(game);
+  const now = new Date();
+  const deadlines = computeTimerDeadlines({
+    status: String(game.status || ""),
+    turnLimitMinutes: settings.turnLimitMinutes,
+    gameLimitMinutes: settings.gameLimitMinutes,
+    gameStartedAt: game.game_started_at,
+    turnStartedAt: game.turn_started_at,
+    pendingFinisherSeat:
+      game.pending_finisher_seat == null ? null : Number(game.pending_finisher_seat),
+  });
   return {
     gameId: game.id,
     code: game.code,
@@ -221,7 +258,7 @@ function scopedState(
     pendingFinisherSeat:
       game.pending_finisher_seat == null ? null : Number(game.pending_finisher_seat),
     consecutivePasses: game.consecutive_passes,
-    settings: game.settings,
+    settings,
     version: game.version,
     players: players.map((p) => {
       const isSelf = viewer && p.id === viewer.id;
@@ -267,6 +304,12 @@ function scopedState(
       }
       return null;
     })(),
+    serverNow: now.toISOString(),
+    turnEndsAt: deadlines.turnEndsAt,
+    gameEndsAt: deadlines.gameEndsAt,
+    turnPaused: deadlines.turnPaused,
+    turnLimitMinutes: deadlines.turnLimitMinutes,
+    gameLimitMinutes: deadlines.gameLimitMinutes,
   };
 }
 
@@ -289,9 +332,12 @@ async function createGame(_sb: SupabaseClient, body: Record<string, unknown>) {
   const board = createEmptyBoard();
   let code = randomCode();
   const token = randomToken();
+  const limits = normalizeTimerLimits(settings);
   const settingsJson = JSON.stringify({
     challengesPerPlayer: challenges,
     consecutivePassesToEnd,
+    turnLimitMinutes: limits.turnLimitMinutes,
+    gameLimitMinutes: limits.gameLimitMinutes,
   });
 
   const client = await pgConnect();
@@ -490,13 +536,30 @@ async function reclaimSeat(_sb: SupabaseClient, body: Record<string, unknown>) {
 async function getState(_sb: SupabaseClient, code: string, token: string) {
   const client = await pgConnect();
   try {
-    const game = await reloadGame(client, code);
-    if (!game) return fail("Game not found", 404);
-    const players = await reloadPlayers(client, String(game.id));
+    await client.queryArray`BEGIN`;
+    await client.queryArray`SELECT pg_advisory_xact_lock(hashtext(${"scrabble:" + code.toUpperCase()}))`;
+    let game = await reloadGame(client, code);
+    if (!game) {
+      await client.queryArray`ROLLBACK`;
+      return fail("Game not found", 404);
+    }
+    let players = await reloadPlayers(client, String(game.id));
     const viewer = players.find((p) => p.token === token);
-    if (!viewer) return fail("Invalid player token", 401);
+    if (!viewer) {
+      await client.queryArray`ROLLBACK`;
+      return fail("Invalid player token", 401);
+    }
+    const applied = await applyExpiredTimers(client, game, players);
+    game = applied.game;
+    players = applied.players;
     const moves = await reloadMoves(client, String(game.id));
+    await client.queryArray`COMMIT`;
     return ok(scopedState(game, players, moves, viewer));
+  } catch (e) {
+    try {
+      await client.queryArray`ROLLBACK`;
+    } catch (_) {}
+    return fail(e instanceof Error ? e.message : String(e), 500);
   } finally {
     await client.end();
   }
@@ -608,6 +671,112 @@ async function maybeEndGame(
   return { game, players, ended: true };
 }
 
+async function endGameByTime(
+  client: Client,
+  game: Record<string, unknown>,
+  players: Array<Record<string, unknown>>,
+) {
+  const version = Number(game.version) + 1;
+  await client.queryArray`
+    UPDATE scrabble.games SET
+      status = 'finished',
+      version = ${version},
+      challengeable_move_id = null,
+      pending_finisher_seat = null,
+      updated_at = now()
+    WHERE id = ${game.id}::uuid
+  `;
+  await client.queryArray`
+    INSERT INTO scrabble.moves (game_id, type, meta)
+    VALUES (
+      ${game.id}::uuid,
+      'endgame_adjust',
+      ${JSON.stringify({ adjustments: [], reason: "time" })}::jsonb
+    )
+  `;
+  await persistPulse(client, String(game.id), version, Number(game.current_seat), "finished");
+  game.status = "finished";
+  game.pending_finisher_seat = null;
+  game.challengeable_move_id = null;
+  game.version = version;
+  return { game, players, ended: true, changed: true };
+}
+
+async function applyTurnTimeout(
+  client: Client,
+  game: Record<string, unknown>,
+  players: Array<Record<string, unknown>>,
+) {
+  const seat = Number(game.current_seat);
+  await client.queryArray`
+    INSERT INTO scrabble.moves (game_id, seat, type)
+    VALUES (${game.id}::uuid, ${seat}, 'timeout')`;
+  game.challengeable_move_id = null;
+  game.turn_number = Number(game.turn_number) + 1;
+  const next = nextSeat(
+    players.map((p) => ({ seat: Number(p.seat), resigned: !!p.resigned })),
+    seat,
+  );
+  const settled = await consumeSkips(client, game, players, next);
+  const version = Number(game.version) + 1;
+  await client.queryArray`
+    UPDATE scrabble.games SET
+      challengeable_move_id = null,
+      current_seat = ${settled},
+      turn_number = ${Number(game.turn_number)},
+      consecutive_passes = ${Number(game.consecutive_passes)},
+      version = ${version},
+      turn_started_at = now(),
+      updated_at = now()
+    WHERE id = ${game.id}::uuid`;
+  game.current_seat = settled;
+  game.version = version;
+  game.challengeable_move_id = null;
+  game.turn_started_at = new Date();
+  const end = await maybeEndGame(client, game, players, null);
+  if (!end.ended) {
+    await persistPulse(client, String(game.id), version, settled, String(game.status));
+  }
+  return { game: end.game, players: end.players, ended: end.ended, changed: true };
+}
+
+async function applyExpiredTimers(
+  client: Client,
+  game: Record<string, unknown>,
+  players: Array<Record<string, unknown>>,
+) {
+  if (String(game.status) !== "active") {
+    return { game, players, changed: false, ended: false };
+  }
+  const now = new Date();
+  const settings = parseGameSettings(game);
+  const deadlines = computeTimerDeadlines({
+    status: String(game.status),
+    turnLimitMinutes: settings.turnLimitMinutes,
+    gameLimitMinutes: settings.gameLimitMinutes,
+    gameStartedAt: game.game_started_at,
+    turnStartedAt: game.turn_started_at,
+    pendingFinisherSeat:
+      game.pending_finisher_seat == null ? null : Number(game.pending_finisher_seat),
+  });
+  const kind = expiredTimerKind(
+    {
+      status: String(game.status),
+      turnEndsAt: deadlines.turnEndsAt,
+      gameEndsAt: deadlines.gameEndsAt,
+      turnPaused: deadlines.turnPaused,
+    },
+    now,
+  );
+  if (kind === "game") {
+    return await endGameByTime(client, game, players);
+  }
+  if (kind === "turn") {
+    return await applyTurnTimeout(client, game, players);
+  }
+  return { game, players, changed: false, ended: false };
+}
+
 async function mutate(
   code: string,
   token: string,
@@ -618,23 +787,34 @@ async function mutate(
     players: Array<Record<string, unknown>>,
     viewer: Record<string, unknown>,
   ) => Promise<Response>,
+  options?: { skipVersion?: boolean },
 ) {
   const client = await pgConnect();
   try {
     await client.queryArray`BEGIN`;
     await client.queryArray`SELECT pg_advisory_xact_lock(hashtext(${"scrabble:" + code.toUpperCase()}))`;
-    const game = await reloadGame(client, code);
+    let game = await reloadGame(client, code);
     if (!game) {
       await client.queryArray`ROLLBACK`;
       return fail("Game not found", 404);
     }
-    const players = await reloadPlayers(client, String(game.id));
+    let players = await reloadPlayers(client, String(game.id));
     const viewer = players.find((p) => p.token === token);
     if (!viewer) {
       await client.queryArray`ROLLBACK`;
       return fail("Invalid player token", 401);
     }
-    if (checkVersion(game, body)) {
+    const applied = await applyExpiredTimers(client, game, players);
+    game = applied.game;
+    players = applied.players;
+    const actionName = String(body.action || "");
+    const skipVersion = !!(options && options.skipVersion) || actionName === "expireTimers";
+    if (applied.changed && actionName !== "expireTimers") {
+      const moves = await reloadMoves(client, String(game.id));
+      await client.queryArray`COMMIT`;
+      return ok(scopedState(game, players, moves, viewer));
+    }
+    if (!skipVersion && checkVersion(game, body)) {
       await client.queryArray`ROLLBACK`;
       return fail("Version conflict", 409, { version: game.version });
     }
@@ -776,12 +956,14 @@ async function doCommitMove(body: Record<string, unknown>) {
         current_seat = ${settled},
         turn_number = ${Number(game.turn_number)},
         version = ${version},
+        turn_started_at = now(),
         updated_at = now()
       WHERE id = ${game.id}::uuid`;
 
     game.pending_finisher_seat = pendingSeat;
     game.current_seat = settled;
     game.version = version;
+    game.turn_started_at = new Date();
 
     let resultGame = game;
     let resultPlayers = players;
@@ -841,10 +1023,12 @@ async function doPass(body: Record<string, unknown>) {
         current_seat = ${settled},
         turn_number = ${Number(game.turn_number)},
         version = ${version},
+        turn_started_at = now(),
         updated_at = now()
       WHERE id = ${game.id}::uuid`;
     game.current_seat = settled;
     game.version = version;
+    game.turn_started_at = new Date();
 
     const end = await maybeEndGame(client, game, players, null);
     if (!end.ended) {
@@ -900,10 +1084,12 @@ async function doExchange(body: Record<string, unknown>) {
         current_seat = ${settled},
         turn_number = ${Number(game.turn_number)},
         version = ${version},
+        turn_started_at = now(),
         updated_at = now()
       WHERE id = ${game.id}::uuid`;
     game.current_seat = settled;
     game.version = version;
+    game.turn_started_at = new Date();
 
     await persistPulse(client, String(game.id), version, settled, String(game.status));
     const moves = (
@@ -931,6 +1117,7 @@ async function doResign(body: Record<string, unknown>) {
 
     let version = Number(game.version) + 1;
     let seat = Number(game.current_seat);
+    let resetTurnClock = false;
     if (seat === Number(viewer.seat) && game.status === "active") {
       seat = nextSeat(
         players.map((p) => ({ seat: Number(p.seat), resigned: !!p.resigned })),
@@ -938,6 +1125,7 @@ async function doResign(body: Record<string, unknown>) {
       );
       game.challengeable_move_id = null;
       seat = await consumeSkips(client, game, players, seat);
+      resetTurnClock = true;
     }
     await client.queryArray`
       UPDATE scrabble.games SET
@@ -946,11 +1134,13 @@ async function doResign(body: Record<string, unknown>) {
         turn_number = ${Number(game.turn_number)},
         current_seat = ${seat},
         version = ${version},
+        turn_started_at = CASE WHEN ${resetTurnClock ? 1 : 0} = 1 THEN now() ELSE turn_started_at END,
         updated_at = now()
       WHERE id = ${game.id}::uuid`;
     game.current_seat = seat;
     game.version = version;
     game.challengeable_move_id = null;
+    if (resetTurnClock) game.turn_started_at = new Date();
 
     const end = await maybeEndGame(client, game, players, null);
     if (!end.ended) {
@@ -1004,6 +1194,7 @@ async function doChallenge(sb: SupabaseClient, body: Record<string, unknown>) {
 
     if (!allValid) {
       // Success challenge — revert play; challenged player loses the turn
+      const restartTurnClock = game.pending_finisher_seat != null;
       const board = (game.board as Array<Array<unknown>>).map((row) =>
         row.map((c) => (c ? { ...(c as object) } : null)),
       );
@@ -1041,12 +1232,14 @@ async function doChallenge(sb: SupabaseClient, body: Record<string, unknown>) {
           challengeable_move_id = null,
           pending_finisher_seat = null,
           version = ${version},
+          turn_started_at = CASE WHEN ${restartTurnClock ? 1 : 0} = 1 THEN now() ELSE turn_started_at END,
           updated_at = now()
         WHERE id = ${game.id}::uuid`;
       game.board = board;
       game.challengeable_move_id = null;
       game.pending_finisher_seat = null;
       game.version = version;
+      if (restartTurnClock) game.turn_started_at = new Date();
 
       await client.queryArray`
         INSERT INTO scrabble.moves (game_id, seat, type, challenged_by, challenge_outcome)
@@ -1088,9 +1281,11 @@ async function doChallenge(sb: SupabaseClient, body: Record<string, unknown>) {
       INSERT INTO scrabble.moves (game_id, seat, type, challenged_by, challenge_outcome)
       VALUES (${game.id}::uuid, ${viewer.seat}, 'challenge', ${viewer.id}::uuid, 'failed')`;
     game.version = version;
+    let resetTurnClock = false;
     if (viewer.skip_next_turn && Number(game.current_seat) === Number(viewer.seat)) {
       const settled = await consumeSkips(client, game, players, Number(viewer.seat));
       game.current_seat = settled;
+      resetTurnClock = true;
     }
     await client.queryArray`
       UPDATE scrabble.games SET
@@ -1099,8 +1294,10 @@ async function doChallenge(sb: SupabaseClient, body: Record<string, unknown>) {
         turn_number = ${Number(game.turn_number)},
         consecutive_passes = ${Number(game.consecutive_passes)},
         challengeable_move_id = ${game.challengeable_move_id}::uuid,
+        turn_started_at = CASE WHEN ${resetTurnClock ? 1 : 0} = 1 THEN now() ELSE turn_started_at END,
         updated_at = now()
       WHERE id = ${game.id}::uuid`;
+    if (resetTurnClock) game.turn_started_at = new Date();
     if (game.pending_finisher_seat != null) {
       const end = await maybeEndGame(
         client,
@@ -1242,10 +1439,14 @@ async function startGame(body: Record<string, unknown>) {
         status = 'active',
         bag = ${game.bag},
         version = ${version},
+        game_started_at = now(),
+        turn_started_at = now(),
         updated_at = now()
       WHERE id = ${game.id}::uuid`;
     game.status = "active";
     game.version = version;
+    game.game_started_at = new Date();
+    game.turn_started_at = new Date();
     await persistPulse(client, String(game.id), version, Number(game.current_seat), "active");
     const moves = await reloadMoves(client, String(game.id));
     return ok(scopedState(game, ordered, moves, viewer));
@@ -1277,6 +1478,21 @@ async function cancelGame(body: Record<string, unknown>) {
     await client.queryArray`DELETE FROM scrabble.games WHERE id = ${game.id}::uuid`;
     return ok({ cancelled: true });
   });
+}
+
+async function doExpireTimers(body: Record<string, unknown>) {
+  const code = String(body.code || "");
+  const token = String(body.token || "");
+  return mutate(
+    code,
+    token,
+    body,
+    async (client, game, players, viewer) => {
+      const moves = await reloadMoves(client, String(game.id));
+      return ok(scopedState(game, players, moves, viewer));
+    },
+    { skipVersion: true },
+  );
 }
 
 async function doEndGame(body: Record<string, unknown>) {
@@ -1410,6 +1626,8 @@ async function handle(req: Request) {
         return await doChallenge(sb, body);
       case "endGame":
         return await doEndGame(body);
+      case "expireTimers":
+        return await doExpireTimers(body);
       case "twoLetterWords":
         return await twoLetterWords(sb, body);
       default:

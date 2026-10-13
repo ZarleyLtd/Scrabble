@@ -75,12 +75,15 @@
     var last = global.PlayerStorage ? PlayerStorage.lastName() : '';
     openDialog(
       '<h2>Play locally</h2>' +
+        '<div class="setup-row">' +
         '<div class="field"><label id="localCountLabel">Number of players</label>' +
         '<div class="count-picker" role="group" aria-labelledby="localCountLabel">' +
         '<button type="button" data-count="2" aria-pressed="true">2</button>' +
         '<button type="button" data-count="3" aria-pressed="false">3</button>' +
         '<button type="button" data-count="4" aria-pressed="false">4</button>' +
         '</div></div>' +
+        (global.ScrabbleTimerPicker ? ScrabbleTimerPicker.fieldsHtml() : '') +
+        '</div>' +
         '<div id="localNames"></div>' +
         '<p class="error-banner hidden" id="localSetupError"></p>' +
         '<div class="btn-row"><button type="button" class="primary" id="btnLocalStart">Start</button>' +
@@ -88,8 +91,10 @@
       function (root) {
         var namesEl = root.querySelector('#localNames');
 
+        var timerPicker = global.ScrabbleTimerPicker ? ScrabbleTimerPicker.bind(root) : null;
+
         function selectedCount() {
-          var pressed = root.querySelector('.count-picker button[aria-pressed="true"]');
+          var pressed = root.querySelector('.count-picker:not(.timer-picker) button[aria-pressed="true"]');
           return parseInt(pressed && pressed.getAttribute('data-count'), 10) || 2;
         }
 
@@ -116,9 +121,9 @@
           namesEl.innerHTML = html;
         }
 
-        root.querySelectorAll('.count-picker button').forEach(function (countBtn) {
+        root.querySelectorAll('.count-picker:not(.timer-picker) button').forEach(function (countBtn) {
           countBtn.addEventListener('click', function () {
-            root.querySelectorAll('.count-picker button').forEach(function (b) {
+            root.querySelectorAll('.count-picker:not(.timer-picker) button').forEach(function (b) {
               b.setAttribute('aria-pressed', b === countBtn ? 'true' : 'false');
             });
             renderNames();
@@ -135,11 +140,18 @@
             names.push(name || 'Player ' + (i + 1));
           }
           if (global.PlayerStorage) PlayerStorage.rememberName(names[0]);
+          var limits = timerPicker
+            ? timerPicker.getLimits()
+            : { turnLimitMinutes: 0, gameLimitMinutes: 0 };
           global.location.href =
             'game.html?local=1&players=' +
             encodeURIComponent(String(n)) +
             '&names=' +
-            encodeURIComponent(names.join(','));
+            encodeURIComponent(names.join(',')) +
+            '&turn=' +
+            encodeURIComponent(String(limits.turnLimitMinutes)) +
+            '&game=' +
+            encodeURIComponent(String(limits.gameLimitMinutes));
         });
       }
     );

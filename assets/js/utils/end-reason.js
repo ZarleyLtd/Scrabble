@@ -4,7 +4,8 @@
 var REASON_COPY = {
   passes: 'All players passed',
   played_out: 'All tiles played',
-  resignations: 'Not enough players remaining'
+  resignations: 'Not enough players remaining',
+  time: 'Time limit reached'
 };
 
 export function formatEndReason(reason) {

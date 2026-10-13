@@ -13,6 +13,11 @@ import {
 import { validatePlacement, isSquareSelectable } from '../game/engine/placement.mjs';
 import { scoreTurn } from '../game/engine/scoring.mjs';
 import { applyEndgameAdjustment, shouldEndGame } from '../game/engine/endgame.mjs';
+import {
+  normalizeTimerLimits,
+  computeTimerDeadlines,
+  expiredTimerKind
+} from '../game/engine/timer.mjs';
 
 function uid() {
   return 'p_' + Math.random().toString(36).slice(2, 10);
@@ -24,6 +29,7 @@ export function createLocalGame(options) {
   var challenges = options.challengesPerPlayer != null ? options.challengesPerPlayer : 2;
   var consecutivePassesToEnd =
     options.consecutivePassesToEnd != null ? options.consecutivePassesToEnd : 1;
+  var limits = normalizeTimerLimits(options);
 
   var bag = createShuffledBag();
   var players = [];
@@ -63,7 +69,11 @@ export function createLocalGame(options) {
     challengeableMoveIndex: null,
     pendingFinisherSeat: null,
     version: 1,
-    endReason: null
+    endReason: null,
+    turnLimitMinutes: limits.turnLimitMinutes,
+    gameLimitMinutes: limits.gameLimitMinutes,
+    gameStartedAt: Date.now(),
+    turnStartedAt: Date.now()
   };
 
   function currentPlayer() {
@@ -91,6 +101,91 @@ export function createLocalGame(options) {
   function finalWordError() {
     if (state.pendingFinisherSeat != null) return 'The final word can still be challenged';
     return null;
+  }
+
+  function markTurnStart() {
+    state.turnStartedAt = Date.now();
+  }
+
+  function timerView(now) {
+    var deadlines = computeTimerDeadlines({
+      status: state.status,
+      turnLimitMinutes: state.turnLimitMinutes,
+      gameLimitMinutes: state.gameLimitMinutes,
+      gameStartedAt: state.gameStartedAt,
+      turnStartedAt: state.turnStartedAt,
+      pendingFinisherSeat: state.pendingFinisherSeat
+    });
+    return Object.assign(
+      {
+        serverNow: new Date(now != null ? now : Date.now()).toISOString()
+      },
+      deadlines
+    );
+  }
+
+  function finishByTime() {
+    if (state.placements.length) {
+      var holder = currentPlayer();
+      if (holder) {
+        state.placements.forEach(function (pl) {
+          holder.rack.push(pl.fromRack != null ? pl.fromRack : pl.blank ? BLANK : pl.letter);
+        });
+      }
+      state.placements = [];
+    }
+    state.status = 'finished';
+    state.endReason = 'time';
+    state.challengeableMoveIndex = null;
+    state.pendingFinisherSeat = null;
+    state.moves.push({
+      type: 'endgame_adjust',
+      adjustments: [],
+      reason: 'time'
+    });
+    bump();
+  }
+
+  function timeoutCurrent() {
+    if (state.placements.length) {
+      var holder = currentPlayer();
+      if (holder) {
+        state.placements.forEach(function (pl) {
+          holder.rack.push(pl.fromRack != null ? pl.fromRack : pl.blank ? BLANK : pl.letter);
+        });
+      }
+      state.placements = [];
+      clearSelection();
+    }
+    var p = currentPlayer();
+    state.challengeableMoveIndex = null;
+    state.moves.push({ type: 'timeout', seat: p ? p.seat : state.currentSeat, name: p && p.name });
+    advanceTurn();
+    bump();
+  }
+
+  function applyExpiredTimers(now) {
+    if (state.status !== 'active') return false;
+    var t = now != null ? now : Date.now();
+    var view = timerView(t);
+    var kind = expiredTimerKind(
+      {
+        status: state.status,
+        turnEndsAt: view.turnEndsAt,
+        gameEndsAt: view.gameEndsAt,
+        turnPaused: view.turnPaused
+      },
+      t
+    );
+    if (kind === 'game') {
+      finishByTime();
+      return true;
+    }
+    if (kind === 'turn') {
+      timeoutCurrent();
+      return true;
+    }
+    return false;
   }
 
   function finishIfNeeded(playedOutSeat) {
@@ -139,6 +234,7 @@ export function createLocalGame(options) {
     state.currentSeat = nextSeat(state.currentSeat);
     state.turnNumber += 1;
     consumeSkips();
+    markTurnStart();
   }
 
   function clearSelection() {
@@ -159,7 +255,14 @@ export function createLocalGame(options) {
 
   return {
     getState: function () {
-      return state;
+      applyExpiredTimers();
+      var view = timerView();
+      return Object.assign({}, state, view);
+    },
+
+    expireTimers: function () {
+      var changed = applyExpiredTimers();
+      return { ok: true, changed: changed };
     },
 
     selectRackTile: function (index) {
@@ -392,6 +495,7 @@ export function createLocalGame(options) {
     },
 
     commitMove: function () {
+      applyExpiredTimers();
       if (state.status !== 'active') return { error: 'Game over' };
       var blocked = finalWordError();
       if (blocked) return { error: blocked };
@@ -457,6 +561,7 @@ export function createLocalGame(options) {
     },
 
     pass: function () {
+      applyExpiredTimers();
       if (state.status !== 'active') return { error: 'Game over' };
       var blocked = finalWordError();
       if (blocked) return { error: blocked };
@@ -472,6 +577,7 @@ export function createLocalGame(options) {
     },
 
     confirmExchange: function () {
+      applyExpiredTimers();
       if (state.status !== 'active') return { error: 'Game over' };
       var blockedExchange = finalWordError();
       if (blockedExchange) return { error: blockedExchange };
@@ -501,6 +607,8 @@ export function createLocalGame(options) {
     },
 
     resign: function (seat) {
+      applyExpiredTimers();
+      if (state.status !== 'active') return { error: 'Game over' };
       var blockedResign = finalWordError();
       if (blockedResign) return { error: blockedResign };
       var p = state.players.find(function (x) {
@@ -518,6 +626,8 @@ export function createLocalGame(options) {
     },
 
     challengeLocal: function (assumeInvalid) {
+      applyExpiredTimers();
+      if (state.status !== 'active') return { error: 'Game over' };
       if (state.challengeableMoveIndex == null) return { error: 'Nothing to challenge' };
       var move = state.moves[state.challengeableMoveIndex];
       if (!move || move.type !== 'play') return { error: 'Nothing to challenge' };
@@ -548,6 +658,7 @@ export function createLocalGame(options) {
           finishIfNeeded(finisher);
         } else if (challenger.skipNextTurn) {
           consumeSkips();
+          markTurnStart();
         }
         bump();
         return {
@@ -592,6 +703,7 @@ export function createLocalGame(options) {
       state.challengeableMoveIndex = null;
       state.pendingFinisherSeat = null;
       // Challenged player loses the turn; current seat stays on the next player
+      markTurnStart();
       bump();
       return {
         ok: true,
@@ -603,6 +715,8 @@ export function createLocalGame(options) {
     },
 
     endGame: function () {
+      applyExpiredTimers();
+      if (state.status !== 'active') return { error: 'Game over' };
       if (state.pendingFinisherSeat == null) return { error: 'Game is not waiting to end' };
       var current = currentPlayer();
       if (current && current.seat === state.pendingFinisherSeat) {

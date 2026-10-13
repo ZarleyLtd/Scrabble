@@ -11,6 +11,8 @@ import { findAutoPlaceSquare, isSquareSelectable } from '../game/engine/placemen
 import { playBoardPlaceSound } from '../utils/tile-sounds.js';
 import { formatEndReason, resolveEndReason } from '../utils/end-reason.js';
 import { formatMoveLogEntry, formatScoreboardHtml } from '../utils/format-move-log.js';
+import { createGameClocks } from '../components/game-clocks.js';
+import { formatTimerLimitsLabel } from '../game/engine/timer.mjs';
 import {
   flashHeaderStatus,
   animateChallengeRemoval,
@@ -78,6 +80,28 @@ export function startOnlineGamePage(ctx) {
   var busy = false;
   var tileUX = null;
   var actionsExpanded = false;
+  var expireInFlight = false;
+  var clocks = createGameClocks(
+    { turnEl: $('headerTurnClock'), gameEl: $('headerGameClock') },
+    {
+      onExpire: function () {
+        if (!creds || !creds.token || expireInFlight) return;
+        expireInFlight = true;
+        placements = [];
+        selectedRackIndex = null;
+        selectedBoard = null;
+        ScrabbleAPI.expireTimers({ code: code, token: creds.token })
+          .then(function (data) {
+            expireInFlight = false;
+            if (data) applySnapshotData(data, null);
+          })
+          .catch(function () {
+            expireInFlight = false;
+            refresh().catch(function () {});
+          });
+      }
+    }
+  );
   var challengeFxBusy = false;
   var refreshQueued = false;
   var refreshGen = 0;
@@ -166,6 +190,18 @@ export function startOnlineGamePage(ctx) {
   }
 
   function applySnapshotData(data, prevRack) {
+    var prevKey = snapshot ? turnKey(snapshot) : '';
+    var nextKey = turnKey(data);
+    if (
+      (prevKey && nextKey && prevKey !== nextKey) ||
+      (data && data.status === 'finished')
+    ) {
+      placements = [];
+      selectedRackIndex = null;
+      selectedBoard = null;
+      exchangeMode = false;
+      exchangeSelected = {};
+    }
     noteOpponentPlay(snapshot, data);
     snapshot = data;
     syncCreds(data);
@@ -430,6 +466,7 @@ export function startOnlineGamePage(ctx) {
 
   function showJoin() {
     if (window.ScrabbleHeader) ScrabbleHeader.setGameActive(false);
+    clocks.update(null);
     clearPlaySurface();
     ctx.joinPanel.classList.remove('hidden');
     ctx.joinPanel.innerHTML =
@@ -509,12 +546,18 @@ export function startOnlineGamePage(ctx) {
       seatHtml += '<li class="lobby-seat"><span>Seat ' + (i + 1) + ': ' + label + '</span>' + moves + '</li>';
     }
     var shareUrl = window.location.href.split('#')[0];
+    var settings = snapshot.settings || {};
+    var timerLabel = formatTimerLimitsLabel(settings.turnLimitMinutes, settings.gameLimitMinutes);
+    clocks.update(snapshot);
     ctx.lobbyPanel.innerHTML =
       '<h2>Lobby</h2>' +
       '<p class="muted">' +
       (host
         ? 'Set the seat order, then start. Tiles are dealt in that order.'
         : 'Waiting for the host to set the seat order and start.') +
+      '</p>' +
+      '<p class="muted">' +
+      timerLabel +
       '</p>' +
       '<ul class="lobby-players">' +
       seatHtml +
@@ -981,6 +1024,7 @@ export function startOnlineGamePage(ctx) {
                 : '';
       }
     }
+    clocks.update(snapshot);
     if (preview && !preview.ok) {
       previewEl.innerHTML = '<span style="color:var(--danger)">' + preview.error + '</span>';
     } else if (preview && preview.ok) {

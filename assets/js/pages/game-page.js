@@ -11,6 +11,7 @@ import { findAutoPlaceSquare } from '../game/engine/placement.mjs';
 import { playBoardPlaceSound } from '../utils/tile-sounds.js';
 import { formatEndReason, resolveEndReason } from '../utils/end-reason.js';
 import { formatMoveLogEntry, formatScoreboardHtml } from '../utils/format-move-log.js';
+import { createGameClocks } from '../components/game-clocks.js';
 import {
   flashHeaderStatus,
   animateChallengeRemoval
@@ -93,7 +94,9 @@ export function startLocalGamePage(root) {
   var game = createLocalGame({
     playerCount: count,
     names: names,
-    challengesPerPlayer: (window.SCRABBLE_CONFIG && SCRABBLE_CONFIG.DEFAULT_CHALLENGES) || 2
+    challengesPerPlayer: (window.SCRABBLE_CONFIG && SCRABBLE_CONFIG.DEFAULT_CHALLENGES) || 2,
+    turnLimitMinutes: parseInt(params.get('turn') || '0', 10) || 0,
+    gameLimitMinutes: parseInt(params.get('game') || '0', 10) || 0
   });
 
   root.innerHTML =
@@ -118,6 +121,15 @@ export function startLocalGamePage(root) {
   var tileUX = null;
   var actionsExpanded = false;
   var challengeFxBusy = false;
+  var clocks = createGameClocks(
+    { turnEl: $('headerTurnClock'), gameEl: $('headerGameClock') },
+    {
+      onExpire: function () {
+        game.expireTimers();
+        render();
+      }
+    }
+  );
 
   function challengeLabel(challengerName, challengedName) {
     return (
@@ -384,6 +396,7 @@ export function startLocalGamePage(root) {
                 : '';
       }
     }
+    clocks.update(s);
     if (preview && preview.error) {
       previewEl.innerHTML = '<span style="color:var(--danger)">' + preview.error + '</span>';
     } else if (preview && preview.total != null) {

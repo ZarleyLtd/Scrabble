@@ -20,7 +20,15 @@ import {
   refillRack,
   RACK_SIZE,
   BINGO_BONUS,
-  findAutoPlaceSquare
+  findAutoPlaceSquare,
+  normalizeTimerLimits,
+  computeTimerDeadlines,
+  expiredTimerKind,
+  formatClockMs,
+  formatTimerLimitsLabel,
+  remainingMs,
+  remainingWithSkew,
+  TURN_WARNING_MS
 } from '../shared/engine/index.mjs';
 
 describe('tiles', () => {
@@ -246,5 +254,82 @@ describe('auto-place', () => {
     const board = createEmptyBoard();
     board[CENTER][CENTER] = { letter: 'A', blank: false, locked: true };
     assert.equal(findAutoPlaceSquare(board, []), null);
+  });
+});
+
+describe('timers', () => {
+  it('normalizes missing or invalid limits to zero', () => {
+    assert.deepEqual(normalizeTimerLimits(null), { turnLimitMinutes: 0, gameLimitMinutes: 0 });
+    assert.deepEqual(normalizeTimerLimits({ turnLimitMinutes: -2, gameLimitMinutes: 3.9 }), {
+      turnLimitMinutes: 0,
+      gameLimitMinutes: 3
+    });
+  });
+
+  it('formats clocks and labels', () => {
+    assert.equal(formatClockMs(0), '0:00');
+    assert.equal(formatClockMs(30000), '0:30');
+    assert.equal(formatClockMs(75 * 60 * 1000), '1:15:00');
+    assert.equal(formatTimerLimitsLabel(0, 0), 'No time limit');
+    assert.equal(formatTimerLimitsLabel(3, 30), '3 min/turn · 30 min game');
+    assert.equal(formatTimerLimitsLabel(0, 60), 'No turn limit · 60 min game');
+  });
+
+  it('computes deadlines and pauses the turn clock during the final-word window', () => {
+    const start = '2026-01-01T00:00:00.000Z';
+    const active = computeTimerDeadlines({
+      status: 'active',
+      turnLimitMinutes: 3,
+      gameLimitMinutes: 30,
+      gameStartedAt: start,
+      turnStartedAt: start,
+      pendingFinisherSeat: null
+    });
+    assert.equal(active.turnEndsAt, '2026-01-01T00:03:00.000Z');
+    assert.equal(active.gameEndsAt, '2026-01-01T00:30:00.000Z');
+    const paused = computeTimerDeadlines({
+      status: 'active',
+      turnLimitMinutes: 3,
+      gameLimitMinutes: 30,
+      gameStartedAt: start,
+      turnStartedAt: start,
+      pendingFinisherSeat: 0
+    });
+    assert.equal(paused.turnEndsAt, null);
+    assert.equal(paused.turnPaused, true);
+    assert.equal(paused.gameEndsAt, '2026-01-01T00:30:00.000Z');
+  });
+
+  it('game expiry wins over turn expiry; paused turns do not expire', () => {
+    const start = '2026-01-01T00:00:00.000Z';
+    const d = computeTimerDeadlines({
+      status: 'active',
+      turnLimitMinutes: 3,
+      gameLimitMinutes: 30,
+      gameStartedAt: start,
+      turnStartedAt: start
+    });
+    assert.equal(expiredTimerKind({ status: 'active', ...d }, '2026-01-01T00:40:00.000Z'), 'game');
+    assert.equal(expiredTimerKind({ status: 'active', ...d }, '2026-01-01T00:03:00.000Z'), 'turn');
+    assert.equal(
+      expiredTimerKind(
+        { status: 'active', turnPaused: true, turnEndsAt: d.turnEndsAt, gameEndsAt: d.gameEndsAt },
+        '2026-01-01T00:03:00.000Z'
+      ),
+      null
+    );
+    assert.equal(remainingMs(d.turnEndsAt, '2026-01-01T00:02:30.000Z'), TURN_WARNING_MS);
+  });
+
+  it('counts down from a frozen server snapshot as local time advances', () => {
+    const end = '2026-01-01T00:03:00.000Z';
+    const server = '2026-01-01T00:00:00.000Z';
+    const received = Date.parse(server);
+    assert.equal(remainingWithSkew(end, server, server, received), 3 * 60 * 1000);
+    assert.equal(
+      remainingWithSkew(end, server, '2026-01-01T00:00:05.000Z', received),
+      3 * 60 * 1000 - 5000
+    );
+    assert.equal(remainingWithSkew(end, server, Date.parse(server) + 5000), 3 * 60 * 1000);
   });
 });

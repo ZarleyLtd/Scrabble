@@ -123,6 +123,9 @@
     endGame: function (body) {
       return post('endGame', body);
     },
+    expireTimers: function (body) {
+      return post('expireTimers', body);
+    },
     twoLetterWords: function (body) {
       return post('twoLetterWords', body);
     }

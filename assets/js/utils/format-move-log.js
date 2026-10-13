@@ -79,6 +79,10 @@ export function formatMoveLogEntry(m) {
     return row('{forfeit}', '');
   }
 
+  if (m.type === 'timeout') {
+    return row('{timeout}', '');
+  }
+
   if (m.type === 'endgame_adjust') {
     return (
       '<div class="move-log__row">' +
