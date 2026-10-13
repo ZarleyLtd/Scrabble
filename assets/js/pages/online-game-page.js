@@ -11,7 +11,7 @@ import { findAutoPlaceSquare, isSquareSelectable } from '../game/engine/placemen
 import { playBoardPlaceSound } from '../utils/tile-sounds.js';
 import { formatEndReason, resolveEndReason } from '../utils/end-reason.js';
 import { formatMoveLogEntry, formatScoreboardHtml } from '../utils/format-move-log.js';
-import { createGameClocks } from '../components/game-clocks.js';
+import { createGameClocks, scoreTotalHtml } from '../components/game-clocks.js';
 import { formatTimerLimitsLabel } from '../game/engine/timer.mjs';
 import {
   flashHeaderStatus,
@@ -82,7 +82,7 @@ export function startOnlineGamePage(ctx) {
   var actionsExpanded = false;
   var expireInFlight = false;
   var clocks = createGameClocks(
-    { turnEl: $('headerTurnClock'), gameEl: $('headerGameClock') },
+    { turnEl: $('headerTurnClock') },
     {
       onExpire: function () {
         if (!creds || !creds.token || expireInFlight) return;
@@ -187,6 +187,12 @@ export function startOnlineGamePage(ctx) {
     }
     var key = turnKey(data);
     turnNoticePending = ackedTurnKey !== key;
+  }
+
+  function acknowledgeTurnNotice() {
+    if (!turnNoticePending || !snapshot) return;
+    ackedTurnKey = turnKey(snapshot);
+    turnNoticePending = false;
   }
 
   function applySnapshotData(data, prevRack) {
@@ -747,6 +753,7 @@ export function startOnlineGamePage(ctx) {
               placements.push({ row: row, col: col, letter: L, blank: blank, fromRack: from });
               selectedRackIndex = null;
               selectedBoard = null;
+              acknowledgeTurnNotice();
               renderGame();
             }
             if (letter === BLANK) {
@@ -784,6 +791,7 @@ export function startOnlineGamePage(ctx) {
             };
             selectedBoard = { row: tr, col: tc };
             selectedRackIndex = null;
+            acknowledgeTurnNotice();
             renderGame();
             return { ok: true };
           },
@@ -838,6 +846,7 @@ export function startOnlineGamePage(ctx) {
       });
       selectedRackIndex = null;
       selectedBoard = null;
+      acknowledgeTurnNotice();
       playBoardPlaceSound();
       renderGame();
     }
@@ -877,8 +886,7 @@ export function startOnlineGamePage(ctx) {
       var okBtn = $('btnTurnOk');
       if (okBtn) {
         okBtn.addEventListener('click', function () {
-          ackedTurnKey = turnKey(snapshot);
-          turnNoticePending = false;
+          acknowledgeTurnNotice();
           renderGame();
         });
       }
@@ -890,7 +898,7 @@ export function startOnlineGamePage(ctx) {
     var finalWord = snapshot.pendingFinisherSeat != null;
     var mustAckTurn = turnNoticePending && myTurn;
     var hasSelection =
-      (selectedRackIndex != null || selectedBoard) && !exchangeMode && myTurn && !mustAckTurn;
+      (selectedRackIndex != null || selectedBoard) && !exchangeMode && myTurn;
     var notice = $('turnNotice');
     if (notice) notice.classList.toggle('hidden', !mustAckTurn);
 
@@ -902,7 +910,7 @@ export function startOnlineGamePage(ctx) {
       selectedBoard: exchangeMode || !myTurn ? null : selectedBoard,
       movingFrom: selectedBoard,
       rackCount: (me ? me.rack.length : 0) + placements.length,
-      interactive: myTurn && !finalWord && !mustAckTurn,
+      interactive: myTurn && !finalWord,
       onCellClick: function (row, col, isTent) {
         if (finalWord) return;
         if (!myTurn) {
@@ -945,6 +953,7 @@ export function startOnlineGamePage(ctx) {
           };
           selectedBoard = { row: row, col: col };
           selectedRackIndex = null;
+          acknowledgeTurnNotice();
           playBoardPlaceSound();
           renderGame();
           return;
@@ -966,6 +975,7 @@ export function startOnlineGamePage(ctx) {
           placements.push({ row: row, col: col, letter: L, blank: blank, fromRack: from });
           selectedRackIndex = null;
           selectedBoard = null;
+          acknowledgeTurnNotice();
           playBoardPlaceSound();
           renderGame();
         }
@@ -1024,7 +1034,6 @@ export function startOnlineGamePage(ctx) {
                 : '';
       }
     }
-    clocks.update(snapshot);
     if (preview && !preview.ok) {
       previewEl.innerHTML = '<span style="color:var(--danger)">' + preview.error + '</span>';
     } else if (preview && preview.ok) {
@@ -1043,6 +1052,7 @@ export function startOnlineGamePage(ctx) {
       previewEl.textContent = '';
     }
 
+    var showBanks = Number(snapshot.gameLimitMinutes) > 0;
     $('scores').innerHTML = (snapshot.players || [])
       .map(function (p) {
         return (
@@ -1058,12 +1068,13 @@ export function startOnlineGamePage(ctx) {
               p.challengesLeft +
               (Number(p.challengesLeft) === 1 ? ' challenge' : ' challenges')
             : '') +
-          '</span><span>' +
-          p.score +
-          '</span></li>'
+          '</span>' +
+          scoreTotalHtml(p, showBanks) +
+          '</li>'
         );
       })
       .join('');
+    clocks.update(snapshot);
 
     $('bagInfo').textContent =
       'Bag: ' +

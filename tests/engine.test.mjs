@@ -28,6 +28,9 @@ import {
   formatTimerLimitsLabel,
   remainingMs,
   remainingWithSkew,
+  liveBankRemainingMs,
+  chargeBankMs,
+  minutesToMs,
   TURN_WARNING_MS
 } from '../shared/engine/index.mjs';
 
@@ -271,54 +274,94 @@ describe('timers', () => {
     assert.equal(formatClockMs(30000), '0:30');
     assert.equal(formatClockMs(75 * 60 * 1000), '1:15:00');
     assert.equal(formatTimerLimitsLabel(0, 0), 'No time limit');
-    assert.equal(formatTimerLimitsLabel(3, 30), '3 min/turn · 30 min game');
-    assert.equal(formatTimerLimitsLabel(0, 60), 'No turn limit · 60 min game');
+    assert.equal(formatTimerLimitsLabel(3, 30), '3 min/turn · 30 min each');
+    assert.equal(formatTimerLimitsLabel(0, 60), 'No turn limit · 60 min each');
   });
 
-  it('computes deadlines and pauses the turn clock during the final-word window', () => {
+  it('computes turn deadlines and pauses during the final-word window', () => {
     const start = '2026-01-01T00:00:00.000Z';
     const active = computeTimerDeadlines({
       status: 'active',
       turnLimitMinutes: 3,
       gameLimitMinutes: 30,
-      gameStartedAt: start,
       turnStartedAt: start,
       pendingFinisherSeat: null
     });
     assert.equal(active.turnEndsAt, '2026-01-01T00:03:00.000Z');
-    assert.equal(active.gameEndsAt, '2026-01-01T00:30:00.000Z');
+    const capped = computeTimerDeadlines({
+      status: 'active',
+      turnLimitMinutes: 3,
+      gameLimitMinutes: 30,
+      turnStartedAt: start,
+      bankRemainingMs: 90 * 1000,
+      pendingFinisherSeat: null
+    });
+    assert.equal(capped.turnEndsAt, '2026-01-01T00:01:30.000Z');
     const paused = computeTimerDeadlines({
       status: 'active',
       turnLimitMinutes: 3,
       gameLimitMinutes: 30,
-      gameStartedAt: start,
       turnStartedAt: start,
       pendingFinisherSeat: 0
     });
     assert.equal(paused.turnEndsAt, null);
     assert.equal(paused.turnPaused, true);
-    assert.equal(paused.gameEndsAt, '2026-01-01T00:30:00.000Z');
   });
 
-  it('game expiry wins over turn expiry; paused turns do not expire', () => {
+  it('bank or turn expiry kinds; paused turns do not expire', () => {
     const start = '2026-01-01T00:00:00.000Z';
     const d = computeTimerDeadlines({
       status: 'active',
       turnLimitMinutes: 3,
       gameLimitMinutes: 30,
-      gameStartedAt: start,
       turnStartedAt: start
     });
-    assert.equal(expiredTimerKind({ status: 'active', ...d }, '2026-01-01T00:40:00.000Z'), 'game');
-    assert.equal(expiredTimerKind({ status: 'active', ...d }, '2026-01-01T00:03:00.000Z'), 'turn');
+    assert.equal(
+      expiredTimerKind({ status: 'active', turnEndsAt: d.turnEndsAt, bankRemainingMs: 0 }, start),
+      'bank',
+      'bank exhaustion takes priority (callers resign the player)'
+    );
     assert.equal(
       expiredTimerKind(
-        { status: 'active', turnPaused: true, turnEndsAt: d.turnEndsAt, gameEndsAt: d.gameEndsAt },
+        { status: 'active', turnEndsAt: d.turnEndsAt, bankRemainingMs: 60000 },
+        '2026-01-01T00:03:00.000Z'
+      ),
+      'turn'
+    );
+    assert.equal(
+      expiredTimerKind(
+        { status: 'active', turnPaused: true, turnEndsAt: d.turnEndsAt, bankRemainingMs: 0 },
         '2026-01-01T00:03:00.000Z'
       ),
       null
     );
     assert.equal(remainingMs(d.turnEndsAt, '2026-01-01T00:02:30.000Z'), TURN_WARNING_MS);
+  });
+
+  it('live bank depletes only on the current player turn', () => {
+    const start = '2026-01-01T00:00:00.000Z';
+    const bank = minutesToMs(30);
+    assert.equal(
+      liveBankRemainingMs({
+        bankRemainingMs: bank,
+        isCurrent: true,
+        status: 'active',
+        turnStartedAt: start,
+        now: '2026-01-01T00:01:00.000Z'
+      }),
+      bank - 60000
+    );
+    assert.equal(
+      liveBankRemainingMs({
+        bankRemainingMs: bank,
+        isCurrent: false,
+        status: 'active',
+        turnStartedAt: start,
+        now: '2026-01-01T00:01:00.000Z'
+      }),
+      bank
+    );
+    assert.equal(chargeBankMs(bank, start, '2026-01-01T00:02:00.000Z'), bank - 120000);
   });
 
   it('counts down from a frozen server snapshot as local time advances', () => {

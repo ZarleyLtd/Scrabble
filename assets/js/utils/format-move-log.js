@@ -72,7 +72,9 @@ export function formatMoveLogEntry(m) {
   }
 
   if (m.type === 'resign') {
-    return row('{resign}', '');
+    var resignLabel =
+      (m.reason === 'bank' || (m.meta && m.meta.reason === 'bank')) ? '{resign · time}' : '{resign}';
+    return row(resignLabel, '');
   }
 
   if (m.type === 'forfeit') {

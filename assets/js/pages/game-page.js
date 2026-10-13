@@ -11,7 +11,7 @@ import { findAutoPlaceSquare } from '../game/engine/placement.mjs';
 import { playBoardPlaceSound } from '../utils/tile-sounds.js';
 import { formatEndReason, resolveEndReason } from '../utils/end-reason.js';
 import { formatMoveLogEntry, formatScoreboardHtml } from '../utils/format-move-log.js';
-import { createGameClocks } from '../components/game-clocks.js';
+import { createGameClocks, scoreTotalHtml } from '../components/game-clocks.js';
 import {
   flashHeaderStatus,
   animateChallengeRemoval
@@ -122,7 +122,7 @@ export function startLocalGamePage(root) {
   var actionsExpanded = false;
   var challengeFxBusy = false;
   var clocks = createGameClocks(
-    { turnEl: $('headerTurnClock'), gameEl: $('headerGameClock') },
+    { turnEl: $('headerTurnClock') },
     {
       onExpire: function () {
         game.expireTimers();
@@ -396,7 +396,6 @@ export function startLocalGamePage(root) {
                 : '';
       }
     }
-    clocks.update(s);
     if (preview && preview.error) {
       previewEl.innerHTML = '<span style="color:var(--danger)">' + preview.error + '</span>';
     } else if (preview && preview.total != null) {
@@ -416,6 +415,7 @@ export function startLocalGamePage(root) {
       previewEl.textContent = '';
     }
 
+    var showBanks = Number(s.gameLimitMinutes) > 0;
     $('scores').innerHTML = s.players
       .map(function (p) {
         return (
@@ -427,12 +427,13 @@ export function startLocalGamePage(root) {
           (p.challengesLeft != null
             ? ' · ' + p.challengesLeft + (Number(p.challengesLeft) === 1 ? ' challenge' : ' challenges')
             : '') +
-          '</span><span>' +
-          p.score +
-          '</span></li>'
+          '</span>' +
+          scoreTotalHtml(p, showBanks) +
+          '</li>'
         );
       })
       .join('');
+    clocks.update(s);
 
     $('bagInfo').textContent =
       'Bag: ' + s.bag.length + ' · Turn ' + s.turnNumber + (s.status === 'finished' ? ' · FINISHED' : '');

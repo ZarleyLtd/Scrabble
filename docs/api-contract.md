@@ -82,11 +82,11 @@ Seats are parked at 4–7, then written back as 0..n-1. Seat 0 plays first.
 
 Host only, when every seat is filled. Deals a full rack to each player in seat order, sets status `active`, and starts `game_started_at` / `turn_started_at` for optional clocks.
 
-Timer settings (`turnLimitMinutes`, `gameLimitMinutes`; `0` = no limit) are stored at create time. Per-turn clocks reset when the current seat changes. A `0` turn remaining skips that player (`timeout` move, not counted as a consecutive pass). A `0` game remaining finishes the game immediately (`endReason: "time"`) and freezes scores with no rack adjustments.
+Timer settings (`turnLimitMinutes`, `gameLimitMinutes`; `0` = no limit) are stored at create time. `gameLimitMinutes` is each player's total time bank for the whole game (not a shared game clock). Per-turn clocks reset when the current seat changes; elapsed turn time is charged against that player's bank. When the current player's remaining bank is shorter than the turn limit, `turnEndsAt` is capped to that bank. A `0` turn remaining skips that player (`timeout` move, not counted as a consecutive pass). A `0` bank remaining resigns that player (`resign` move with `meta.reason: "bank"`) and advances; if too few players remain, the game ends (`endReason: "resignations"`).
 
 ### expireTimers (POST)
 
-`{ code, token }`. Any seated player. Applies due turn/game expiry (same as a lazy check on `state` and other mutations). Does not require `expectedVersion`.
+`{ code, token }`. Any seated player. Applies due turn/bank expiry (same as a lazy check on `state` and other mutations). Does not require `expectedVersion`.
 
 ### cancelGame (POST)
 
@@ -103,7 +103,7 @@ Host only, while `lobby`. Deletes the game. Players, moves, and the pulse row ca
 ### state (GET or POST)
 
 Query/body: `code`, `token`  
-Returns player-scoped snapshot (own rack, others' tile counts only, board, scores, currentSeat, challengeableMoveId, version, moves summary). Also `serverNow`, `turnEndsAt`, `gameEndsAt` (ISO or null), `turnPaused`, `turnLimitMinutes`, `gameLimitMinutes`. Applies due timer expiry before returning.
+Returns player-scoped snapshot (own rack, others' tile counts only, board, scores, currentSeat, challengeableMoveId, version, moves summary). Also `serverNow`, `turnEndsAt` (ISO or null), `turnPaused`, `turnLimitMinutes`, `gameLimitMinutes`, and per-player `bankRemainingMs` (live remaining bank while it is that player's turn). Applies due timer expiry before returning.
 
 ### drawTiles (POST)
 

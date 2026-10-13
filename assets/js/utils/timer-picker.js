@@ -28,13 +28,14 @@
       '<div class="field"><label id="timerLimitLabel">Timer</label>' +
       '<div class="count-picker timer-picker" role="group" aria-labelledby="timerLimitLabel">' +
       buttons +
-      '</div></div>' +
+      '</div>' +
       '<div class="timer-custom hidden" id="timerCustom">' +
-      '<div class="field"><label for="customTurnMinutes">Minutes per turn (0 = no limit)</label>' +
-      '<input id="customTurnMinutes" type="number" min="0" max="999" step="1" value="0" /></div>' +
-      '<div class="field"><label for="customGameMinutes">Minutes for the game (0 = no limit)</label>' +
-      '<input id="customGameMinutes" type="number" min="0" max="999" step="1" value="0" /></div>' +
-      '</div>'
+      '<input id="customTurnMinutes" class="timer-custom__input timer-custom__input--turn" type="text" inputmode="numeric" ' +
+      'pattern="[0-9]*" maxlength="2" value="0" aria-label="Minutes per turn (0 = no limit)" />' +
+      '<span class="timer-custom__sep" aria-hidden="true">/</span>' +
+      '<input id="customGameMinutes" class="timer-custom__input timer-custom__input--game" type="text" inputmode="numeric" ' +
+      'pattern="[0-9]*" maxlength="3" value="0" aria-label="Minutes per player for the game (0 = no limit)" />' +
+      '</div></div>'
     );
   }
 
@@ -65,6 +66,20 @@
       if (customEl) customEl.classList.toggle('hidden', !preset.custom);
     }
 
+    function sanitizeInput(el, maxDigits, maxValue) {
+      if (!el) return;
+      el.addEventListener('input', function () {
+        el.value = String(el.value || '').replace(/\D/g, '').slice(0, maxDigits);
+      });
+      el.addEventListener('blur', function () {
+        var n = parseInt(el.value, 10);
+        if (!isFinite(n) || n < 0) n = 0;
+        el.value = String(Math.min(maxValue, n));
+      });
+    }
+    sanitizeInput(turnEl, 2, 99);
+    sanitizeInput(gameEl, 3, 999);
+
     if (picker) {
       picker.querySelectorAll('button').forEach(function (btn) {
         btn.addEventListener('click', function () {
@@ -72,6 +87,7 @@
             b.setAttribute('aria-pressed', b === btn ? 'true' : 'false');
           });
           syncCustom();
+          if (selectedPreset().custom && turnEl) turnEl.focus();
         });
       });
     }
@@ -82,7 +98,7 @@
         var preset = selectedPreset();
         if (preset.custom) {
           return {
-            turnLimitMinutes: clampMinutes(turnEl && turnEl.value),
+            turnLimitMinutes: Math.min(99, clampMinutes(turnEl && turnEl.value)),
             gameLimitMinutes: clampMinutes(gameEl && gameEl.value)
           };
         }

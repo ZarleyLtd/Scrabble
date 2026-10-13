@@ -16,7 +16,10 @@ import { applyEndgameAdjustment, shouldEndGame } from '../game/engine/endgame.mj
 import {
   normalizeTimerLimits,
   computeTimerDeadlines,
-  expiredTimerKind
+  expiredTimerKind,
+  liveBankRemainingMs,
+  chargeBankMs,
+  minutesToMs
 } from '../game/engine/timer.mjs';
 
 function uid() {
@@ -33,6 +36,7 @@ export function createLocalGame(options) {
 
   var bag = createShuffledBag();
   var players = [];
+  var bankMs = limits.gameLimitMinutes > 0 ? minutesToMs(limits.gameLimitMinutes) : null;
   for (var i = 0; i < playerCount; i++) {
     players.push({
       id: uid(),
@@ -42,7 +46,8 @@ export function createLocalGame(options) {
       score: 0,
       challengesLeft: challenges,
       skipNextTurn: false,
-      resigned: false
+      resigned: false,
+      bankRemainingMs: bankMs
     });
   }
   for (var d = 0; d < players.length; d++) {
@@ -107,56 +112,63 @@ export function createLocalGame(options) {
     state.turnStartedAt = Date.now();
   }
 
+  function chargeCurrentBank(now) {
+    if (state.gameLimitMinutes <= 0 || state.pendingFinisherSeat != null) return;
+    var p = currentPlayer();
+    if (!p || p.bankRemainingMs == null) return;
+    p.bankRemainingMs = chargeBankMs(p.bankRemainingMs, state.turnStartedAt, now != null ? now : Date.now());
+  }
+
   function timerView(now) {
+    var t = now != null ? now : Date.now();
+    var cur = currentPlayer();
     var deadlines = computeTimerDeadlines({
       status: state.status,
       turnLimitMinutes: state.turnLimitMinutes,
       gameLimitMinutes: state.gameLimitMinutes,
-      gameStartedAt: state.gameStartedAt,
       turnStartedAt: state.turnStartedAt,
+      bankRemainingMs: cur && cur.bankRemainingMs != null ? cur.bankRemainingMs : null,
       pendingFinisherSeat: state.pendingFinisherSeat
     });
     return Object.assign(
       {
-        serverNow: new Date(now != null ? now : Date.now()).toISOString()
+        serverNow: new Date(t).toISOString()
       },
       deadlines
     );
   }
 
-  function finishByTime() {
-    if (state.placements.length) {
-      var holder = currentPlayer();
-      if (holder) {
-        state.placements.forEach(function (pl) {
-          holder.rack.push(pl.fromRack != null ? pl.fromRack : pl.blank ? BLANK : pl.letter);
-        });
-      }
-      state.placements = [];
-    }
-    state.status = 'finished';
-    state.endReason = 'time';
-    state.challengeableMoveIndex = null;
-    state.pendingFinisherSeat = null;
-    state.moves.push({
-      type: 'endgame_adjust',
-      adjustments: [],
-      reason: 'time'
+  function playersWithLiveBanks(now) {
+    var t = now != null ? now : Date.now();
+    var view = timerView(t);
+    return state.players.map(function (p) {
+      return Object.assign({}, p, {
+        bankRemainingMs: liveBankRemainingMs({
+          bankRemainingMs: p.bankRemainingMs,
+          isCurrent: p.seat === state.currentSeat,
+          status: state.status,
+          turnStartedAt: state.turnStartedAt,
+          turnPaused: view.turnPaused,
+          now: t
+        })
+      });
     });
-    bump();
+  }
+
+  function recallTentativePlacements() {
+    if (!state.placements.length) return;
+    var holder = currentPlayer();
+    if (holder) {
+      state.placements.forEach(function (pl) {
+        holder.rack.push(pl.fromRack != null ? pl.fromRack : pl.blank ? BLANK : pl.letter);
+      });
+    }
+    state.placements = [];
+    clearSelection();
   }
 
   function timeoutCurrent() {
-    if (state.placements.length) {
-      var holder = currentPlayer();
-      if (holder) {
-        state.placements.forEach(function (pl) {
-          holder.rack.push(pl.fromRack != null ? pl.fromRack : pl.blank ? BLANK : pl.letter);
-        });
-      }
-      state.placements = [];
-      clearSelection();
-    }
+    recallTentativePlacements();
     var p = currentPlayer();
     state.challengeableMoveIndex = null;
     state.moves.push({ type: 'timeout', seat: p ? p.seat : state.currentSeat, name: p && p.name });
@@ -164,21 +176,49 @@ export function createLocalGame(options) {
     bump();
   }
 
+  function resignCurrentForBank() {
+    recallTentativePlacements();
+    chargeCurrentBank();
+    var p = currentPlayer();
+    if (!p || p.resigned) return;
+    p.resigned = true;
+    if (p.bankRemainingMs != null) p.bankRemainingMs = 0;
+    state.challengeableMoveIndex = null;
+    state.moves.push({
+      type: 'resign',
+      seat: p.seat,
+      name: p.name,
+      reason: 'bank'
+    });
+    finishIfNeeded(null);
+    if (state.status === 'active') advanceTurn();
+    bump();
+  }
+
   function applyExpiredTimers(now) {
     if (state.status !== 'active') return false;
     var t = now != null ? now : Date.now();
     var view = timerView(t);
+    var cur = currentPlayer();
+    var bankLive = liveBankRemainingMs({
+      bankRemainingMs: cur && cur.bankRemainingMs,
+      isCurrent: true,
+      status: state.status,
+      turnStartedAt: state.turnStartedAt,
+      turnPaused: view.turnPaused,
+      now: t
+    });
     var kind = expiredTimerKind(
       {
         status: state.status,
         turnEndsAt: view.turnEndsAt,
-        gameEndsAt: view.gameEndsAt,
+        bankRemainingMs: bankLive,
         turnPaused: view.turnPaused
       },
       t
     );
-    if (kind === 'game') {
-      finishByTime();
+    if (kind === 'bank') {
+      resignCurrentForBank();
       return true;
     }
     if (kind === 'turn') {
@@ -226,6 +266,7 @@ export function createLocalGame(options) {
   }
 
   function advanceTurn() {
+    chargeCurrentBank();
     state.placements = [];
     state.selectedRackIndex = null;
     state.selectedBoard = null;
@@ -257,7 +298,9 @@ export function createLocalGame(options) {
     getState: function () {
       applyExpiredTimers();
       var view = timerView();
-      return Object.assign({}, state, view);
+      return Object.assign({}, state, view, {
+        players: playersWithLiveBanks()
+      });
     },
 
     expireTimers: function () {
